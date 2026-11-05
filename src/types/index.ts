@@ -7,6 +7,7 @@ export interface Post {
   cover_image: string | null;
   category: string;
   tags: string[];
+  embedding?: number[] | string;
   published: boolean;
   created_at: string;
   updated_at: string;
