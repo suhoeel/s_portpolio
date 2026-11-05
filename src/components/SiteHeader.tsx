@@ -9,9 +9,9 @@ import { cn } from "@/lib/utils";
 import { openChat } from "@/components/ChatWidget";
 
 const links = [
-  { href: "/", label: "글" },
+  { href: "/", label: "소개" },
+  { href: "/blog", label: "블로그" },
   { href: "/graph", label: "지식 그래프" },
-  { href: "/about", label: "소개" },
 ];
 
 export function SiteHeader() {
@@ -26,7 +26,7 @@ export function SiteHeader() {
   }, []);
 
   const isActive = (href: string) =>
-    href === "/" ? pathname === "/" || pathname.startsWith("/blog") : pathname.startsWith(href);
+    href === "/" ? pathname === "/" : pathname.startsWith(href);
 
   return (
     <header

@@ -6,7 +6,7 @@ insert into public.posts (slug, title, summary, cover_image, category, tags, cre
   'pgvector와 Full-Text Search를 섞어 하이브리드 검색 만들기',
   '벡터 검색만 쓰다 고유명사를 놓친 경험에서 출발해, 키워드 검색과 벡터 검색을 Postgres 하나로 합치고 RRF로 순위를 보정한 실무 기록입니다.',
   null,
-  'Database',
+  'Search & RAG',
   array['Supabase', 'pgvector', 'RAG', 'PostgreSQL', 'Search'],
   '2026-10-10 10:00:00+09',
 $md$
@@ -98,7 +98,7 @@ $md$
   'BM25란 무엇인가? 엘라스틱서치 검색의 비밀',
   '전통적인 키워드 검색의 왕좌를 지키고 있는 BM25 알고리즘의 핵심 개념을 수식 없이 직관적으로 풀어냈습니다.',
   null,
-  'Database',
+  'Information Retrieval',
   array['Search', 'Elasticsearch', 'BM25', 'PostgreSQL'],
   '2026-10-12 14:00:00+09',
 $md$
@@ -142,7 +142,7 @@ $md$
   'RRF(Reciprocal Rank Fusion) 알고리즘 쉽게 이해하기',
   '단위가 다른 여러 검색 결과를 가중치 튜닝 없이 가장 공정하고 안정적으로 합쳐주는 RRF의 원리와 장점을 정리했습니다.',
   null,
-  'Database',
+  'Ranking Algorithm',
   array['Search', 'RAG', 'PostgreSQL', 'Algorithm'],
   '2026-10-14 16:00:00+09',
 $md$
@@ -197,7 +197,7 @@ $md$
   '태그만으로 블로그 지식 그래프 그리기',
   '별도 그래프 DB 없이 글과 태그의 관계만으로 지식 그래프를 만들고, React Flow로 시각화한 과정입니다.',
   null,
-  'Frontend',
+  'Data Visualization',
   array['Knowledge Graph', 'React Flow', 'Visualization'],
   '2026-10-08 10:00:00+09',
 $md$
