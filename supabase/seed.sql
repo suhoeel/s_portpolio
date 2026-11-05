@@ -4,201 +4,199 @@ insert into public.posts (slug, title, summary, cover_image, category, tags, cre
 (
   'supabase-hybrid-search',
   'pgvector와 Full-Text Search를 섞어 하이브리드 검색 만들기',
-  'Sparse Vector(BM25/tsvector)와 Dense Vector(pgvector)의 원리적 차이를 비교하고, 토크나이징·임베딩 유사도 계산부터 RRF(Reciprocal Rank Fusion) 알고리즘으로 상호보완적 하이브리드 검색 엔진을 구축하는 실무 아키텍처를 정리했습니다.',
+  '벡터 검색만 쓰다 고유명사를 놓친 경험에서 출발해, 키워드 검색과 벡터 검색을 Postgres 하나로 합치고 RRF로 순위를 보정한 실무 기록입니다.',
   null,
   'Database',
-  array['Supabase', 'pgvector', 'RAG', 'PostgreSQL', 'Search', 'Elasticsearch'],
+  array['Supabase', 'pgvector', 'RAG', 'PostgreSQL', 'Search'],
   '2026-10-10 10:00:00+09',
 $md$
-## 1. 왜 벡터 검색(Dense Vector)만으로는 한계가 있을까?
+## 벡터 검색만 쓰다가 마주친 황당한 순간
 
-LLM 기반 RAG(Retrieval-Augmented Generation) 파이프라인이나 추천 검색 엔진을 구현할 때 흔히 `text-embedding-3-small`, `bge-m3` 같은 Dense Embedding 모델을 사용하여 벡터 유사도 검색을 구축합니다.
+요즘 RAG나 AI 검색을 만들 때 대부분 `text-embedding-3-small` 같은 임베딩 모델을 붙여서 벡터 유사도 검색부터 구현하곤 합니다. 저 역시 그렇게 시작했습니다.
 
-그러나 실무 프로덕션 환경에 배포하는 순간 다음과 같은 치명적인 문제점들에 직면하게 됩니다.
+처음에는 문맥을 찰떡같이 알아듣는 모습에 감탄했는데, 실제 서비스를 테스트하면서 곧바로 한계에 부딪혔습니다. 사용자가 **"CVE-2024-38077 취약점 패치 내역 알려줘"**나 **"UserServiceImpl 클래스 위치 어디야?"**처럼 정확한 고유명사나 코드 식별자를 물어봤을 때였습니다.
 
-1. **정확한 고유명사 및 코드 식별자 매칭 실패**:
-   `CVE-2024-38077`, `PR-4921`, `com.example.service.UserServiceImpl`, `v1.24.0-rc1`과 같은 단어는 토크나이저를 거치면서 하위 토큰(Subwords)으로 잘게 쪼개져 고유한 의미가 희석됩니다. 결과적으로 코사인 유사도 연산 시 엉뚱한 버전이나 무관한 문서가 상위 랭킹(Top-k)을 차지합니다.
-2. **도메인 특화 약어 및 전문 용어 누락**:
-   일반 도메인 코퍼스로 사전 학습된 임베딩 모델은 사내 특화 축약어, 금융/법률 규제 조항 번호, 부품 일련번호를 문맥적으로만 모호하게 해석하여 정확한 검색 결과를 반환하지 못합니다.
-3. **희귀 키워드(Out-of-Vocabulary)의 가중치 과소평가**:
-   문서 집합 전체에서 단 한 번 등장하는 핵심 키워드라도 Dense Vector 공간상에서는 평균적인 벡터 방향으로 뭉개지는 현상이 발생합니다.
+임베딩 모델은 이런 단어들을 서브워드 단위로 쪼개다 보니 고유한 의미를 잃어버리고, 결과적으로 전혀 상관없는 엉뚱한 버전의 문서나 일반적인 설명 글을 1등으로 추천해 주는 문제가 생겼습니다.
 
-> **"Dense Vector(의미 검색)는 '문맥이 비슷한 것'을 찾고, Sparse Vector(키워드 검색)는 '정확히 그 단어'를 찾는다."**
+> **"의미 검색(Dense Vector)은 '분위기가 비슷한 것'을 귀신같이 찾지만, 키워드 검색(Sparse Vector)은 '정확히 그 단어'를 집어내는 데 탁월합니다."**
 
-두 방식은 대체 관계가 아니라 완벽한 **상호보완 관계**입니다. 이 두 검색 방식을 하나의 관계형 데이터베이스인 PostgreSQL 내부에서 결합하는 아키텍처를 다룹니다.
+결국 둘 중 하나만 선택하는 게 아니라, 두 검색을 똑똑하게 섞는 **하이브리드 검색(Hybrid Search)**이 필요했습니다.
 
 ---
 
-## 2. Sparse Vector vs Dense Vector: 표현 방식과 원리적 차이
+## 키워드 검색(Sparse)과 벡터 검색(Dense)의 차이
 
-검색 엔지니어링에서 정보를 벡터로 표현하는 방식은 크게 **Sparse(희소) 벡터**와 **Dense(밀집) 벡터**로 구분됩니다.
+검색 방식을 이해할 때 어렵게 생각할 필요 없이 두 가지만 기억하면 됩니다.
 
-| 비교 항목 | Sparse Vector (키워드/어휘 기반) | Dense Vector (임베딩/의미 기반) |
-| :--- | :--- | :--- |
-| **대표 기술 및 알고리즘** | **BM25**, TF-IDF, PostgreSQL `tsvector`, SPLADE | **pgvector**, OpenAI Embeddings, BERT, BGE |
-| **차원 수 (Dimensions)** | 수만 ~ 수십만 차원 (전체 어휘 사전 크기) | 384, 768, 1536 등 고정된 저차원 |
-| **값의 밀도** | 대부분의 원소가 `0`이며 매칭 단어만 가중치를 가짐 | 모든 차원이 0이 아닌 연속적인 실수(Float)로 채워짐 |
-| **토크나이징 기법** | 형태소 분석기, N-gram, 공백/구두점 토크나이저 | BPE(Byte-Pair Encoding), WordPiece 등 Subword |
-| **유사도 측정 기준** | 단어 빈도(TF), 역문서 빈도(IDF), 문서 길이 정규화 | 코사인 유사도(Cosine), 내적(Dot Product), L2 거리 |
-| **장점** | 정확한 키워드 매칭, 오탈자/식별자 강건성, 인덱싱 비용 저렴 | 동의어·유의어 이해, 다국어 교차 매칭, 문맥 추론 |
-| **단점** | 어휘 불일치(Vocabulary Mismatch) 문제, 의미 이해 불가 | Out-of-Vocabulary 취약, 연산 및 인덱스 메모리 비용 높음 |
+1. **Sparse Vector (키워드/어휘 기반)**
+   - 대표적으로 엘라스틱서치나 전통 검색엔진에서 쓰는 **BM25**, 그리고 PostgreSQL의 **`tsvector`**가 여기에 해당합니다.
+   - 단어가 문서에 실제로 몇 번 나왔는지, 다른 문서에는 잘 안 나오는 귀한 단어인지(희귀도)를 따져 점수를 냅니다.
+   - **장점**: 에러 코드, 고유명사, 품번, 사람이 정한 명칭을 100% 정확하게 찾아냅니다.
+   - **단점**: "점심 메뉴 추천"으로 검색하면 "식사", "맛집" 같은 동의어나 문맥을 이해하지 못합니다.
+   - 👉 *BM25의 배경과 원리가 궁금하다면 [BM25란 무엇인가? 엘라스틱서치 검색의 비밀](/blog/what-is-bm25) 글을 참고해 보세요.*
 
-### (1) Sparse Vector: 토크나이징과 BM25 스코어링
-
-PostgreSQL의 `tsvector`와 [Elasticsearch의 BM25(Best Matching 25)](https://www.elastic.co/guide/en/elasticsearch/reference/current/index-modules-similarity.html)는 어휘 통계에 기반합니다.
-
-텍스트가 인입되면 **토크나이저(Tokenizer)**가 문장을 토큰으로 분해하고, 불용어(Stopwords) 제거 및 스테밍(Stemming)을 거쳐 정규화된 형태소 사전 공간에 사상합니다.
-
-BM25의 점수 산출 공식은 다음과 같습니다:
-
-$$\text{Score}(D, Q) = \sum_{i=1}^{N} \text{IDF}(q_i) \cdot \frac{f(q_i, D) \cdot (k_1 + 1)}{f(q_i, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
-
-- **$\text{IDF}(q_i)$**: 전체 코퍼스에서 흔한 단어는 가중치를 낮추고, 드물게 등장하는 희귀 키워드에 높은 점수를 부여합니다.
-- **$f(q_i, D)$**: 단어의 문서 내 출현 빈도(TF)지만, 단순 선형 증가가 아닌 포화 함수(Saturation)를 적용하여 특정 단어 도배로 인한 점수 왜곡을 방지합니다.
-- **$|D| / \text{avgdl}$**: 문서 길이에 따른 패널티를 부여하여 불필요하게 긴 문서가 유리해지는 문제를 정규화합니다.
-
-### (2) Dense Vector: 딥러닝 임베딩과 유사도 공간
-
-Dense Vector는 문장을 고정 차원의 연속된 벡터 공간으로 매핑합니다. 트랜스포머 기반 인코더 모델의 숨겨진 상태(Hidden States)를 풀링(Mean/CLS Pooling)하여 문맥적 의미를 압축합니다.
-
-두 벡터 간의 의미적 유사도는 주로 **코사인 유사도(Cosine Similarity)**로 측정됩니다:
-
-$$\cos(\theta) = \frac{\mathbf{A} \cdot \mathbf{B}}{\|\mathbf{A}\| \|\mathbf{B}\|} = \frac{\sum_{i=1}^{n} A_i B_i}{\sqrt{\sum_{i=1}^{n} A_i^2} \sqrt{\sum_{i=1}^{n} B_i^2}}$$
-
-`pgvector`에서는 HNSW(Hierarchical Navigable Small World) 인덱스를 사용하여 초당 수만 건의 벡터에 대해 밀리초 단위로 근사 최근접 이웃(ANN, Approximate Nearest Neighbor)을 탐색합니다.
+2. **Dense Vector (임베딩/의미 기반)**
+   - 문장을 AI 임베딩 모델에 넣어 고정된 크기(예: 384차원, 1536차원)의 숫자로 바꾼 뒤 코사인 유사도를 계산합니다.
+   - **장점**: 오타가 있거나 다른 단어를 써도 전체적인 질문의 의도와 문맥을 기가 막히게 파악합니다.
+   - **단점**: 위에서 겪었던 것처럼 고유명사나 정확한 식별자 매칭에 취약합니다.
 
 ---
 
-## 3. PostgreSQL 단일 인프라로 구성하는 3-Tier 하이브리드 엔진
+## Postgres 하나로 하이브리드 엔진 만들기
 
-일반적으로 하이브리드 검색을 구성하려면 [Elasticsearch 클러스터](https://www.elastic.co/what-is/elasticsearch)와 별도의 벡터 데이터베이스(Milvus, Pinecone 등)를 운영하며 데이터 동기화 파이프라인(CDC)을 관리해야 합니다. 이는 막대한 인프라 복잡도와 네트워크 레이턴시를 유발합니다.
+보통 하이브리드 검색을 하려면 [Elasticsearch](https://www.elastic.co/kr/) 클러스터를 따로 띄우고 벡터 DB도 따로 구축한 다음, 둘 사이를 카프카나 CDC로 동기화하곤 합니다. 하지만 개인 블로그나 작은 서비스에서 그렇게까지 인프라를 늘리면 관리 비용이 너무 큽니다.
 
-하지만 **PostgreSQL + pgvector** 조합을 활용하면 단일 데이터베이스 트랜잭션 내에서 **Full-Text Search(FTS)**, **N-gram 부분 일치(pg_trgm)**, **벡터 유사도 검색(HNSW)**을 한 번에 실행할 수 있습니다.
+다행히 **PostgreSQL**에는 이 모든 것이 다 들어있습니다:
 
-### 테이블 스키마 및 인덱스 설계
+- **`tsvector`**: 형태소/키워드 전문 검색 (FTS)
+- **`pg_trgm`**: 한국어 조사나 오타가 섞여 있어도 글자 단위로 매칭해 주는 Trigram 검색
+- **`pgvector` (HNSW 인덱스)**: 수만 건의 임베딩 벡터를 밀리초 단위로 찾아주는 고속 벡터 인덱스
+
+테이블에 컬럼만 몇 개 추가하면 DB 하나로 완벽한 하이브리드 준비가 끝납니다.
 
 ```sql
-create extension if not exists vector with schema extensions;
-create extension if not exists pg_trgm with schema extensions;
-
--- 청크 단위 테이블 설계
-create table public.post_chunks (
-  id          bigserial primary key,
-  post_id     bigint references public.posts(id) on delete cascade,
-  content     text not null,
-  -- 1. Full-Text Search를 위한 tsvector 컬럼 (단어 위치 보존)
-  fts         tsvector generated always as (to_tsvector('simple', content)) stored,
-  -- 2. 임베딩 벡터 컬럼 (예: 384차원 bge-small 또는 1536차원 text-embedding-3)
-  embedding   extensions.vector(384)
-);
-
--- 인덱스 구성
--- FTS 역색인 인덱스
+-- 본문 키워드 검색용 tsvector
 create index idx_chunks_fts on public.post_chunks using gin (fts);
 
--- 한국어 조작 및 부분 문자열 검색을 위한 Trigram GIN 인덱스
+-- 한국어 부분 일치용 pg_trgm
 create index idx_chunks_trgm on public.post_chunks using gin (content extensions.gin_trgm_ops);
 
--- 고속 ANN 탐색을 위한 HNSW 코사인 인덱스
-create index idx_chunks_embedding on public.post_chunks using hnsw (embedding extensions.vector_cosine_ops)
-with (m = 16, ef_construction = 64);
-```
-
-> **한국어 검색 시 주의점**: PostgreSQL 기본 내장 형태소 분석기에는 한국어 사전이 없습니다. 따라서 `to_tsvector('simple', ...)` 설정으로 토큰을 분리하고, 조사나 어미 변화로 인한 미스매치는 `pg_trgm`(Trigram N-gram) 인덱스로 커버하는 하이브리드 키워드 전략이 가장 효과적입니다.
-
----
-
-## 4. RRF(Reciprocal Rank Fusion) 알고리즘으로 서로 다른 점수 통합하기
-
-하이브리드 검색 구현 시 가장 흔히 저지르는 실수는 **BM25 점수(0 ~ 무한대)**와 **코사인 유사도(0 ~ 1)**를 가중합(`Score = α * BM25 + β * Cosine`)으로 직접 더하는 것입니다. 점수의 분포와 스케일이 전혀 다르기 때문에 한쪽 점수가 전체 랭킹을 왜곡하는 현상이 발생합니다.
-
-이 문제를 우아하게 해결하는 알고리즘이 바로 **RRF(Reciprocal Rank Fusion)**입니다.
-
-$$\text{RRF Score}(d) = \sum_{m \in M} \frac{1}{k + r_m(d)}$$
-
-- $M$: 참여하는 검색 모델 집합 (예: FTS, Trigram, Vector)
-- $r_m(d)$: 해당 검색 모델 $m$에서 문서 $d$가 차지한 **순위(Rank, 1부터 시작)**
-- $k$: 스무딩 상수(Smoothing constant, 통상 **60** 또는 **50** 권장). 상위 순위 간 점수 격차가 지나치게 벌어지는 것을 완화합니다.
-
-RRF는 절대적인 점수를 보지 않고 **'순위(Rank)'만 참조**하므로, 별도의 점수 정규화(Min-Max Scaling 등) 없이도 극도로 안정적인 순위 융합 결과를 도출합니다.
-
-### PostgreSQL Stored Function 구현 예시
-
-```sql
-create or replace function public.search_knowledge(
-  query_text      text,
-  query_embedding extensions.vector(384) default null,
-  match_count     int default 6,
-  rrf_k           int default 50
-)
-returns table (
-  chunk_id    bigint,
-  content     text,
-  score       double precision
-)
-language sql stable as $$
-  with
-  -- 1. FTS 키워드 검색 순위 (Top 30)
-  fts_rank as (
-    select id, row_number() over (order by ts_rank_cd(fts, plainto_tsquery('simple', query_text)) desc) as rnk
-    from public.post_chunks
-    where fts @@ plainto_tsquery('simple', query_text)
-    limit 30
-  ),
-  -- 2. Trigram 부분 일치 검색 순위 (Top 30)
-  trgm_rank as (
-    select id, row_number() over (order by word_similarity(query_text, content) desc) as rnk
-    from public.post_chunks
-    where content % query_text
-    limit 30
-  ),
-  -- 3. pgvector Dense Vector 유사도 순위 (Top 30)
-  vec_rank as (
-    select id, row_number() over (order by embedding <=> query_embedding) as rnk
-    from public.post_chunks
-    where query_embedding is not null and embedding is not null
-    limit 30
-  ),
-  -- 4. RRF 순위 합산
-  fused_ranks as (
-    select id, sum(1.0 / (rrf_k + rnk)) as combined_score
-    from (
-      select id, rnk from fts_rank
-      union all
-      select id, rnk from trgm_rank
-      union all
-      select id, rnk from vec_rank
-    ) all_ranks
-    group by id
-  )
-  select c.id as chunk_id, c.content, f.combined_score as score
-  from fused_ranks f
-  join public.post_chunks c on c.id = f.id
-  order by f.combined_score desc
-  limit match_count;
-$$;
+-- 벡터 유사도용 HNSW 인덱스
+create index idx_chunks_embedding on public.post_chunks using hnsw (embedding extensions.vector_cosine_ops);
 ```
 
 ---
 
-## 5. 실무 도입 체크리스트 & 성능 최적화
+## 서로 다른 점수를 합치는 비결: RRF 알고리즘
 
-1. **임베딩 생성 파이프라인의 비동기화**:
-   글 저장 시 실시간으로 임베딩 API를 호출하면 쓰기 지연이 발생합니다. Supabase Edge Function이나 백그라운드 워커 큐를 통해 `content` 저장 후 비동기로 `embedding` 컬럼을 채우는 아키텍처를 권장합니다.
-2. **HNSW 인덱스의 메모리 사이징**:
-   HNSW 인덱스는 메모리(RAM)에 상주할 때 가장 빠른 검색 속도를 보여줍니다. `shared_buffers`와 `work_mem`이 벡터 인덱스 크기를 충분히 수용할 수 있는지 모니터링해야 합니다.
-3. **Elasticsearch와의 아키텍처 선택 기준**:
-   - 데이터가 **수백만 건 이하**이며 단일 트랜잭션 보장, 관리 비용 절감이 우선인 경우: **PostgreSQL + pgvector**로 충분하며 운영상 압도적으로 유리합니다.
-   - 데이터가 **수천만 건 이상**이거나, 형태소 복합 토큰화 및 분산 샤딩이 필수적인 경우: 전용 검색 엔진인 [Elasticsearch](https://www.elastic.co/)나 [OpenSearch](https://opensearch.org/)로 분리 운영하는 것이 적합합니다.
+여기서 한 가지 큰 고민이 생깁니다. 
 
-하이브리드 검색은 복잡한 다중 시스템을 도입하지 않고도, 알고리즘과 자료구조의 특성을 정확히 이해하고 조합함으로써 프로덕션 수준의 검색 품질을 완성할 수 있는 강력한 엔지니어링 해법입니다.
+키워드 검색 점수(BM25)는 0점부터 10점, 100점까지 제한 없이 올라가는데, 벡터 검색 코사인 유사도는 0과 1 사이의 소수점으로 나옵니다. 단위도 기준도 다른 점수를 그냥 더해버리면 한쪽이 전체 결과를 엉망으로 흔들어 놓습니다.
+
+이때 구원투수로 쓰이는 것이 **RRF(Reciprocal Rank Fusion)**라는 알고리즘입니다.
+
+RRF의 아이디어는 놀라울 정도로 단순합니다. **"점수는 무시하고, 각 검색 결과의 순위(등수)만 가지고 역수를 취해 더하자!"**는 것입니다.
+
+- 키워드 검색에서 1등을 한 문서: `1 / (50 + 1)`
+- 벡터 검색에서 2등을 한 문서: `1 / (50 + 2)`
+
+이렇게 계산하면 점수 체계가 완전히 달라도 공정하게 랭킹을 융합할 수 있습니다. 키워드 검색에서도 상위권이고 벡터 검색에서도 상위권인 문서가 압도적인 1등으로 올라오게 됩니다.
+
+👉 *RRF가 왜 다른 점수 보정법보다 단순하고 강력한지는 [RRF(Reciprocal Rank Fusion) 알고리즘 쉽게 이해하기](/blog/understanding-rrf) 글에서 자세히 다루었습니다.*
+
+---
+
+## 마무리하며
+
+하이브리드 검색을 구축하고 난 뒤로는 고유명사 검색과 자연어 질문 양쪽 모두에서 검색 만족도가 눈에 띄게 올라갔습니다. 
+
+무조건 거대한 별도 검색 시스템을 도입하기 전에, PostgreSQL에 내장된 FTS와 `pgvector`, 그리고 단순한 RRF 순위 합산만으로도 기대 이상의 검색 품질을 만들 수 있다는 점이 가장 큰 수확이었습니다.
+$md$
+),
+(
+  'what-is-bm25',
+  'BM25란 무엇인가? 엘라스틱서치 검색의 비밀',
+  '전통적인 키워드 검색의 왕좌를 지키고 있는 BM25 알고리즘의 핵심 개념을 수식 없이 직관적으로 풀어냈습니다.',
+  null,
+  'Database',
+  array['Search', 'Elasticsearch', 'BM25', 'PostgreSQL'],
+  '2026-10-12 14:00:00+09',
+$md$
+## 검색창에 단어를 치면 컴퓨터는 어떻게 순위를 매길까?
+
+구글이나 네이버, 쇼핑몰 검색창에 단어를 입력했을 때 어떤 문서가 제일 먼저 나와야 할까요? 
+
+단순히 "그 단어가 가장 많이 들어있는 글"을 1등으로 주면 될 것 같지만, 그렇게 하면 누군가 글 끝에 특정 단어를 100번 복사해 붙여넣은 스팸 글이 1등을 차지하게 됩니다. 게다가 "그리고", "하지만" 같은 흔한 단어가 많이 들어간 글이 상위에 오를 수도 있습니다.
+
+이 문제를 해결하기 위해 고안된 대표적인 알고리즘이 바로 [Elasticsearch(엘라스틱서치)](https://www.elastic.co/kr/)의 기본 랭킹 엔진으로 쓰이는 **BM25(Best Matching 25)**입니다.
+
+---
+
+## BM25를 움직이는 세 가지 핵심 직관
+
+복잡한 수학 공식을 몰라도, BM25는 다음 3가지 상식적인 규칙으로 움직입니다.
+
+### 1. 흔한 단어는 가치를 낮추고, 귀한 단어는 점수를 팍팍 준다 (IDF)
+문서 1,000개 중에서 900개에 나오는 단어(예: '웹사이트', '개발')는 별로 중요하지 않습니다. 하지만 단 2개의 문서에만 등장하는 희귀한 단어(예: 'CVE-2024-38077', '품번A-90')가 검색어에 포함되어 있다면, 그 단어를 포함한 문서는 엄청나게 높은 점수를 받습니다.
+
+### 2. 단어가 많이 나온다고 점수를 무한정 퍼주지 않는다 (TF 포화도)
+단어가 1번 나오는 것보다 3번 나오는 게 당연히 중요합니다. 하지만 50번 나오는 글과 100번 나오는 글 사이에 과연 2배의 차이가 있을까요?
+BM25는 단어 출현 횟수가 늘어날수록 점수의 상승 폭을 서서히 줄여서 상한선(포화 상태)을 만듭니다. 이를 통해 어뷰징이나 도배를 방지합니다.
+
+### 3. 짧은 글에서 나온 단어가 긴 글에서 나온 단어보다 귀하다 (문서 길이 정규화)
+10줄짜리 짧은 메모에서 '도커'라는 단어가 2번 나온 것과, 300페이지짜리 책에서 '도커'가 2번 나온 것은 무게감이 다릅니다. BM25는 문서가 전체 평균보다 길면 감점을 주고, 짧고 핵심만 담은 글에 가산점을 줍니다.
+
+---
+
+## 최근 벡터 검색과의 시너지
+
+최근 딥러닝 기반의 임베딩 검색이 유행하면서 BM25가 옛날 기술처럼 느껴질 수 있습니다. 하지만 실제로는 **정확한 품번, 에러 로그, 고유명사**를 집어내는 데는 여전히 BM25만 한 기술이 없습니다.
+
+그래서 최근의 검색 시스템은 BM25로 정확한 키워드를 잡고, 벡터 검색으로 의미와 문맥을 보완하는 하이브리드 구조로 발전하고 있습니다.
+
+👉 *Postgres에서 BM25와 벡터 검색을 함께 쓰는 방법은 [pgvector와 Full-Text Search를 섞어 하이브리드 검색 만들기](/blog/supabase-hybrid-search) 글을 확인해 보세요.*
+$md$
+),
+(
+  'understanding-rrf',
+  'RRF(Reciprocal Rank Fusion) 알고리즘 쉽게 이해하기',
+  '단위가 다른 여러 검색 결과를 가중치 튜닝 없이 가장 공정하고 안정적으로 합쳐주는 RRF의 원리와 장점을 정리했습니다.',
+  null,
+  'Database',
+  array['Search', 'RAG', 'PostgreSQL', 'Algorithm'],
+  '2026-10-14 16:00:00+09',
+$md$
+## 서로 다른 점수를 가진 두 검색 결과, 어떻게 합칠까?
+
+키워드 검색(BM25)과 벡터 유사도 검색(Vector Embedding)을 함께 돌리면 각각 다음과 같은 결과 점수를 얻게 됩니다.
+
+- **키워드 검색 결과**: 문서 A (15.4점), 문서 B (8.2점)
+- **벡터 검색 결과**: 문서 B (0.89점), 문서 C (0.85점)
+
+이때 문서의 최종 순위를 매기려면 어떻게 해야 할까요?
+
+가장 먼저 떠오르는 방법은 `최종 점수 = 0.5 * 키워드점수 + 0.5 * 벡터점수` 같은 가중치 합산입니다. 하지만 키워드 점수는 수십 점대이고 벡터 점수는 0~1 사이의 소수점이기 때문에, 키워드 점수가 전체 결과를 완전히 지배해 버립니다.
+
+그렇다고 매번 최대/최소 정규화(Min-Max Normalization)를 하자니 검색어가 바뀔 때마다 점수 분포가 요동쳐서 튜닝하기가 매우 까다롭습니다.
+
+---
+
+## 등수(Rank)만 본다는 기발한 발상: RRF
+
+이 난제를 아주 심플하게 풀어낸 방법이 바로 **RRF(Reciprocal Rank Fusion)**입니다.
+
+RRF는 원본 점수를 거들떠보지도 않습니다. 오직 **"몇 등으로 들어왔는가?"**라는 순위 정보만 사용합니다.
+
+등수에 일정한 상수(보통 50이나 60)를 더한 뒤 역수를 취해 더해줍니다:
+
+$$\text{RRF 점수} = \frac{1}{50 + \text{등수}}$$
+
+예를 들어 볼까요?
+- **문서 A**: 키워드 1등, 벡터 검색에서는 순위권 밖 (30위 밖)
+  - 점수: `1 / (50 + 1) = 0.0196`
+- **문서 B**: 키워드 2등, 벡터 검색 1등
+  - 점수: `1 / (50 + 2) + 1 / (50 + 1) = 0.0192 + 0.0196 = 0.0388`
+
+결과는 문서 B의 압승입니다. 양쪽 검색 모델 모두에서 고르게 상위권을 차지한 문서가 가장 신뢰할 수 있는 결과로 자연스럽게 올라서게 됩니다.
+
+---
+
+## RRF의 세 가지 장점
+
+1. **점수 정규화가 필요 없다**: 점수 범위가 어떻게 다르든 상관없이 등수만 따지므로 견고합니다.
+2. **튜닝 스트레스가 없다**: 별도의 머신러닝 가중치 학습 없이 상수 `k=60` 하나만으로 프로덕션 환경에서 매우 우수한 품질을 냅니다.
+3. **새로운 검색 모델을 추가하기 쉽다**: 나중에 3번째, 4번째 검색 모델이 추가되어도 단순히 `+ 1 / (60 + 새 모델 등수)`만 더해주면 끝납니다.
+
+PostgreSQL에서도 `UNION ALL`과 `SUM()` 쿼리 몇 줄만으로 바로 구현할 수 있을 만큼 가볍고 강력합니다.
+
+👉 *실제 SQL로 구현한 하이브리드 엔진 코드는 [pgvector와 Full-Text Search를 섞어 하이브리드 검색 만들기](/blog/supabase-hybrid-search)에서 확인하실 수 있습니다.*
 $md$
 ),
 (
   'knowledge-graph-from-tags',
   '태그만으로 블로그 지식 그래프 그리기',
   '별도 그래프 DB 없이 글과 태그의 관계만으로 지식 그래프를 만들고, React Flow로 시각화한 과정입니다.',
-  '/images/covers/knowledge-graph.jpg',
+  null,
   'Frontend',
   array['Knowledge Graph', 'React Flow', 'Visualization'],
   '2026-10-08 10:00:00+09',
@@ -234,79 +232,5 @@ for (const e of edges) {
 ## 다음 단계
 
 태그 대신 LLM으로 본문에서 개념(entity)을 추출하면 더 촘촘한 그래프를 만들 수 있습니다.
-$md$
-),
-(
-  'building-markdown-blog',
-  'Next.js로 마크다운 블로그와 에디터 만들기',
-  '글은 마크다운으로 저장하고, 툴바 버튼으로 서식을 넣을 수 있는 에디터와 실시간 미리보기를 만든 과정입니다.',
-  '/images/covers/nextjs-blog.jpg',
-  'Frontend',
-  array['Next.js', 'Markdown', 'Editor'],
-  '2026-10-05 10:00:00+09',
-$md$
-## 왜 마크다운으로 저장하나
-
-HTML로 저장하면 렌더링은 쉽지만 **검색과 RAG 청킹**이 어렵습니다. 마크다운은 제목(`##`) 단위로 자연스럽게 나눌 수 있어 지식 베이스로 쓰기 좋습니다.
-
-## 에디터 구성
-
-- 왼쪽: 마크다운 입력창
-- 오른쪽: 실시간 미리보기
-- 상단: **굵게**, *기울임*, 제목, 목록, 인용, 코드, 링크, 이미지 버튼
-
-이미지는 Supabase Storage에 업로드하고, 본문에는 `![설명](URL)` 형태로 삽입됩니다.
-
-## 렌더링
-
-`react-markdown` + `remark-gfm`으로 표, 체크리스트까지 지원합니다.
-
-| 기능 | 지원 |
-| --- | --- |
-| 코드 블록 | ✅ |
-| 표 | ✅ |
-| 이미지 | ✅ |
-
-- [x] 마크다운 저장
-- [x] 이미지 업로드
-- [ ] 임베딩 자동 생성
-$md$
-),
-(
-  'local-supabase-with-docker',
-  'Docker로 로컬 Supabase 띄우고 필요한 것만 남기기',
-  'Supabase CLI로 로컬 스택을 띄우되, 블로그에 필요 없는 서비스는 꺼서 가볍게 운영하는 설정을 정리했습니다.',
-  '/images/covers/local-supabase.jpg',
-  'DevOps',
-  array['Supabase', 'Docker', 'Local Dev'],
-  '2026-10-02 10:00:00+09',
-$md$
-## 기본 스택은 무겁다
-
-`supabase start`를 그대로 실행하면 Auth, Realtime, Storage, Edge Runtime, Analytics 등 10개가 넘는 컨테이너가 뜹니다. 개인 블로그에는 대부분 필요 없습니다.
-
-## config.toml에서 끄기
-
-```toml
-[realtime]
-enabled = false
-
-[edge_runtime]
-enabled = false
-
-[analytics]
-enabled = false
-```
-
-## 프로젝트마다 포트 분리
-
-여러 로컬 프로젝트를 오가면 포트가 겹칩니다. 프로젝트별로 포트 대역을 나눠 두면 편합니다.
-
-- 기존 실험 프로젝트: `5432x`
-- 블로그: `5532x`
-
-## 마이그레이션으로 관리
-
-스키마는 `supabase/migrations`에, 초기 데이터는 `seed.sql`에 두면 `supabase db reset` 한 번으로 언제든 깨끗한 DB를 다시 만들 수 있습니다.
 $md$
 );
