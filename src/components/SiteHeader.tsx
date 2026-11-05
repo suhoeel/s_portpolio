@@ -31,13 +31,13 @@ export function SiteHeader() {
   return (
     <header
       className={cn(
-        "sticky top-0 z-40 bg-white/85 backdrop-blur-md transition-shadow duration-300",
-        scrolled ? "shadow-[0_1px_0_#eef0f3]" : ""
+        "sticky top-0 z-40 bg-white border-b border-[#EBECF0] transition-colors",
+        scrolled ? "border-[#DFE1E6]" : ""
       )}
     >
-      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
-        <div className="flex items-center gap-8">
-          <Link href="/" className="text-[19px] font-extrabold tracking-tight text-[#191f28]">
+      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-5">
+        <div className="flex items-center gap-6">
+          <Link href="/" className="text-base font-bold tracking-tight text-[#172B4D] hover:text-[#0052CC] transition-colors">
             {profile.blogName}
           </Link>
           <nav className="hidden items-center gap-1 sm:flex">
@@ -46,8 +46,10 @@ export function SiteHeader() {
                 key={l.href}
                 href={l.href}
                 className={cn(
-                  "rounded-lg px-3 py-1.5 text-[15px] font-medium transition-colors",
-                  isActive(l.href) ? "text-[#191f28]" : "text-[#8b95a1] hover:text-[#4e5968]"
+                  "rounded-md px-2.5 py-1 text-sm font-medium transition-colors",
+                  isActive(l.href)
+                    ? "bg-[#F4F5F7] text-[#172B4D] font-bold"
+                    : "text-[#5E6C84] hover:bg-[#FAFBFC] hover:text-[#172B4D]"
                 )}
               >
                 {l.label}
@@ -59,36 +61,20 @@ export function SiteHeader() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => openChat()}
-            className="flex items-center gap-2 rounded-full border border-[#e5e8eb] px-3.5 py-1.5 text-sm text-[#6b7684] transition-colors hover:border-[#d1d6db] hover:text-[#333d4b]"
+            className="flex items-center gap-1.5 rounded-md border border-[#DFE1E6] bg-[#FAFBFC] px-2.5 py-1 text-xs text-[#5E6C84] transition-colors hover:border-[#B3D4FF] hover:text-[#0052CC] hover:bg-white"
           >
-            <Search className="h-4 w-4" />
-            <span className="hidden md:inline">지식 검색 · AI에게 묻기</span>
+            <Search className="h-3.5 w-3.5" />
+            <span className="hidden md:inline">검색</span>
           </button>
           <Link
             href="/write"
-            className="flex items-center gap-1.5 rounded-full bg-[#191f28] px-3.5 py-1.5 text-sm font-medium text-white transition-colors hover:bg-[#333d4b]"
+            className="flex items-center gap-1.5 rounded-md bg-[#172B4D] px-3 py-1 text-xs font-semibold text-white transition-colors hover:bg-[#091E42]"
           >
-            <PenLine className="h-4 w-4" />
+            <PenLine className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">글쓰기</span>
           </Link>
         </div>
       </div>
-
-      {/* mobile nav */}
-      <nav className="no-scrollbar flex gap-1 overflow-x-auto px-3 pb-2 sm:hidden">
-        {links.map((l) => (
-          <Link
-            key={l.href}
-            href={l.href}
-            className={cn(
-              "shrink-0 rounded-lg px-3 py-1 text-sm font-medium",
-              isActive(l.href) ? "bg-[#f2f4f6] text-[#191f28]" : "text-[#8b95a1]"
-            )}
-          >
-            {l.label}
-          </Link>
-        ))}
-      </nav>
     </header>
   );
 }

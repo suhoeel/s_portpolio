@@ -14,6 +14,18 @@ interface BlogFeedProps {
   tagCounts: [string, number][];
 }
 
+const CATEGORY_STYLES: Record<string, { bg: string; text: string; dot: string }> = {
+  "Search & RAG": { bg: "#E0EFFF", text: "#0052CC", dot: "#0052CC" },
+  "Information Retrieval": { bg: "#E3FCEF", text: "#00875A", dot: "#00875A" },
+  "Ranking Algorithm": { bg: "#FFEBE6", text: "#DE350B", dot: "#DE350B" },
+  "Data Visualization": { bg: "#EAE6FF", text: "#5243AA", dot: "#5243AA" },
+  default: { bg: "#F4F5F7", text: "#42526E", dot: "#42526E" },
+};
+
+function getCategoryStyle(category: string) {
+  return CATEGORY_STYLES[category] || CATEGORY_STYLES.default;
+}
+
 export function BlogFeed({ initialPosts, categories, tagCounts }: BlogFeedProps) {
   const [selectedCategory, setSelectedCategory] = useState("전체");
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
@@ -41,10 +53,10 @@ export function BlogFeed({ initialPosts, categories, tagCounts }: BlogFeedProps)
 
   return (
     <div>
-      {/* Category Tabs & Search Bar */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-4">
+      {/* Category Tabs & Search Bar (Notion Clean Layout) */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-6 pb-4 border-b border-[#EBECF0]">
         {/* Category Tabs */}
-        <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
+        <div className="no-scrollbar flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0">
           {categories.map((cat) => (
             <button
               key={cat}
@@ -52,10 +64,10 @@ export function BlogFeed({ initialPosts, categories, tagCounts }: BlogFeedProps)
                 setSelectedCategory(cat);
                 setSelectedTag(null);
               }}
-              className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition-colors ${
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
                 selectedCategory === cat && !selectedTag
-                  ? "bg-[#191f28] text-white shadow-sm"
-                  : "bg-[#f2f4f6] text-[#4e5968] hover:bg-[#e5e8eb] hover:text-[#191f28]"
+                  ? "bg-[#172B4D] text-white"
+                  : "bg-[#FAFBFC] text-[#5E6C84] border border-[#EBECF0] hover:bg-[#F4F5F7] hover:text-[#172B4D]"
               }`}
             >
               {cat}
@@ -63,201 +75,165 @@ export function BlogFeed({ initialPosts, categories, tagCounts }: BlogFeedProps)
           ))}
         </div>
 
-        {/* Integrated Search & AI Query Bar */}
-        <div className="relative flex items-center sm:w-80">
-          <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8b95a1]" />
+        {/* Search Input */}
+        <div className="relative flex items-center sm:w-72">
+          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#6B778C]" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="글 검색 또는 AI 질문..."
-            className="w-full rounded-full border border-[#e5e8eb] bg-[#f9fafb] pl-9 pr-24 py-2 text-sm text-[#191f28] placeholder:text-[#8b95a1] focus:border-[#3182f6] focus:bg-white focus:outline-none transition-all shadow-sm"
+            placeholder="포스트 또는 태그 검색..."
+            className="w-full rounded-md border border-[#DFE1E6] bg-[#FAFBFC] pl-8 pr-7 py-1.5 text-xs text-[#172B4D] placeholder:text-[#8993A4] focus:border-[#0052CC] focus:bg-white focus:outline-none transition-all"
           />
-          <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery("")}
-                className="p-1 text-[#8b95a1] hover:text-[#191f28]"
-                title="검색어 지우기"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
+          {searchQuery && (
             <button
-              onClick={() => openChat(searchQuery || undefined)}
-              className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 px-2.5 py-1 text-[11px] font-semibold text-white shadow-sm hover:from-blue-700 hover:to-indigo-700 transition-all"
-              title="AI 지식 챗봇에게 질문하기 (Enter)"
+              onClick={() => setSearchQuery("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-[#8993A4] hover:text-[#172B4D]"
             >
-              <Sparkles className="h-3 w-3" />
-              <span>AI</span>
+              <X className="h-3.5 w-3.5" />
             </button>
-          </div>
+          )}
         </div>
       </div>
 
-      {/* Dynamic AI Quick Prompt Bar when typing search query */}
+      {/* Notion Callout Box when searching */}
       {searchQuery.trim() && (
-        <div className="mb-6 flex items-center justify-between rounded-xl bg-gradient-to-r from-blue-50/90 via-indigo-50/70 to-blue-50/90 border border-blue-100/80 px-4 py-2.5 text-xs transition-all shadow-xs animate-in fade-in">
-          <div className="flex items-center gap-2 text-[#3182f6] font-medium truncate">
-            <Sparkles className="h-4 w-4 shrink-0 text-[#3182f6]" />
-            <span className="truncate text-[#191f28]">
-              &lsquo;<strong className="font-semibold text-[#1b64da]">{searchQuery}</strong>&rsquo;에 대해 블로그 문맥 기반으로 AI에게 바로 물어볼까요?
+        <div className="mb-6 flex items-center justify-between rounded-lg border border-[#B3D4FF] bg-[#F4F8FF] px-4 py-2.5 text-xs text-[#172B4D]">
+          <div className="flex items-center gap-2 truncate">
+            <Sparkles className="h-4 w-4 text-[#0052CC] shrink-0" />
+            <span className="truncate">
+              &lsquo;<strong className="font-bold text-[#0052CC]">{searchQuery}</strong>&rsquo; 관련 지식을 AI에게 질문할 수 있습니다.
             </span>
           </div>
           <button
             onClick={() => openChat(searchQuery.trim())}
-            className="ml-3 shrink-0 inline-flex items-center gap-1 rounded-lg bg-[#3182f6] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#1b64da] shadow-xs transition-colors"
+            className="ml-3 shrink-0 rounded bg-[#0052CC] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#0747A6] transition-colors"
           >
-            <span>AI 질의하기</span>
-            <span className="text-[10px] opacity-75 hidden sm:inline">↵</span>
+            질문하기 ↵
           </button>
         </div>
       )}
 
       {/* Tag Filter Pills */}
       {tagCounts.length > 0 && (
-        <div className="mb-8 flex flex-wrap items-center gap-1.5">
-          <span className="text-xs font-semibold text-[#8b95a1] mr-1 flex items-center gap-1">
+        <div className="mb-6 flex flex-wrap items-center gap-1.5">
+          <span className="text-xs font-bold text-[#6B778C] mr-1 flex items-center gap-1">
             <Tag className="h-3 w-3" /> 태그:
           </span>
           {tagCounts.slice(0, 10).map(([tag, count]) => (
             <button
               key={tag}
               onClick={() => setSelectedTag(selectedTag === tag ? null : tag)}
-              className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+              className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
                 selectedTag === tag
-                  ? "bg-[#3182f6] text-white shadow-xs"
-                  : "bg-[#f9fafb] text-[#6b7684] border border-[#eef0f3] hover:border-[#d1d6db]"
+                  ? "bg-[#0052CC] text-white"
+                  : "bg-[#FAFBFC] text-[#5E6C84] border border-[#EBECF0] hover:border-[#DFE1E6]"
               }`}
             >
               #{tag} <span className="opacity-70 text-[10px] ml-0.5">{count}</span>
             </button>
           ))}
           {selectedTag && (
-            <div className="inline-flex items-center gap-2 ml-1">
-              <button
-                onClick={() => setSelectedTag(null)}
-                className="text-xs text-[#8b95a1] hover:text-[#4e5968] underline"
-              >
-                태그 초기화
-              </button>
-              <button
-                onClick={() => openChat(`${selectedTag}에 대해 쉽게 설명해줘`)}
-                className="inline-flex items-center gap-1 rounded-md bg-blue-50 border border-blue-200/60 px-2 py-0.5 text-[11px] font-medium text-[#3182f6] hover:bg-blue-100/60 transition-colors"
-              >
-                <Sparkles className="h-2.5 w-2.5" />
-                <span>#{selectedTag} AI 설명</span>
-              </button>
-            </div>
+            <button
+              onClick={() => setSelectedTag(null)}
+              className="text-xs text-[#0052CC] font-semibold hover:underline ml-1"
+            >
+              초기화
+            </button>
           )}
         </div>
       )}
 
-      {/* Post List Feed */}
+      {/* Post List Feed: Document & Material Clean Style */}
       {filteredPosts.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-[#e5e8eb] bg-[#fafbfc] py-16 px-6 text-center">
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-[#3182f6]">
-            <Sparkles className="h-6 w-6" />
-          </div>
-          <p className="text-[15px] font-semibold text-[#191f28]">
+        <div className="rounded-lg border border-dashed border-[#DFE1E6] bg-[#FAFBFC] py-16 px-6 text-center">
+          <p className="text-sm font-semibold text-[#172B4D]">
             {searchQuery
               ? `'${searchQuery}'에 대한 포스트를 찾을 수 없습니다.`
               : "조건에 맞는 포스트가 없습니다."}
           </p>
-          <p className="mt-1.5 text-xs text-[#8b95a1] max-w-md mx-auto leading-relaxed">
-            포스트 본문에 직접적인 키워드가 없더라도, AI 지식 검색이 블로그 전체의 의미론적 문맥을 파악해 답변을 드릴 수 있습니다.
-          </p>
-          <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-            {searchQuery && (
-              <button
-                onClick={() => openChat(searchQuery.trim())}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-[#3182f6] px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#1b64da] transition-colors"
-              >
-                <Sparkles className="h-3.5 w-3.5" />
-                AI에게 &lsquo;{searchQuery}&rsquo; 직접 질문하기
-              </button>
-            )}
-            <button
-              onClick={() => {
-                setSelectedCategory("전체");
-                setSelectedTag(null);
-                setSearchQuery("");
-              }}
-              className="rounded-xl border border-[#e5e8eb] bg-white px-3.5 py-2 text-xs font-medium text-[#4e5968] hover:bg-[#f2f4f6] transition-colors"
-            >
-              모든 필터 초기화
-            </button>
-          </div>
+          <button
+            onClick={() => {
+              setSelectedCategory("전체");
+              setSelectedTag(null);
+              setSearchQuery("");
+            }}
+            className="mt-3 rounded border border-[#DFE1E6] bg-white px-3 py-1.5 text-xs font-semibold text-[#172B4D] hover:bg-[#F4F5F7]"
+          >
+            필터 초기화
+          </button>
         </div>
       ) : (
-        <div className="divide-y divide-[#f2f4f6]">
-          {filteredPosts.map((post, index) => (
-            <article
-              key={post.id}
-              className="group py-9 transition-colors first:pt-0"
-              style={{ "--i": index } as React.CSSProperties}
-            >
-              <div className="flex flex-col-reverse gap-6 sm:flex-row sm:items-start sm:justify-between">
-                
-                {/* Text Content */}
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="rounded-md bg-[#f2f4f6] px-2 py-0.5 font-semibold text-[#4e5968]">
-                      {post.category}
-                    </span>
-                    <span className="text-[#b0b8c1]">·</span>
-                    <span className="flex items-center gap-1 text-[#8b95a1]">
-                      <Calendar className="h-3 w-3" />
-                      {formatDate(post.created_at)}
-                    </span>
-                  </div>
+        <div className="divide-y divide-[#EBECF0]">
+          {filteredPosts.map((post) => {
+            const catStyle = getCategoryStyle(post.category);
 
-                  <Link href={`/blog/${post.slug}`} className="block mt-2.5">
-                    <h2 className="text-xl font-bold tracking-tight text-[#191f28] group-hover:text-[#3182f6] transition-colors sm:text-2xl leading-snug">
-                      {post.title}
-                    </h2>
-                  </Link>
-
-                  <p className="mt-2 text-[15px] leading-relaxed text-[#4e5968] line-clamp-2">
-                    {post.summary}
-                  </p>
-
-                  <div className="mt-4 flex flex-wrap items-center gap-1.5">
-                    {post.tags.map((tag) => (
+            return (
+              <article key={post.id} className="group py-7 transition-colors first:pt-0">
+                <div className="flex flex-col-reverse gap-5 sm:flex-row sm:items-start sm:justify-between">
+                  {/* Content Area */}
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
                       <span
-                        key={tag}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          setSelectedTag(tag);
-                        }}
-                        className="cursor-pointer rounded-md bg-[#f8f9fa] border border-[#f0f2f5] px-2 py-0.5 text-xs text-[#6b7684] hover:bg-[#eef1f4] transition-colors"
+                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-bold"
+                        style={{ backgroundColor: catStyle.bg, color: catStyle.text }}
                       >
-                        #{tag}
+                        <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: catStyle.dot }} />
+                        {post.category}
                       </span>
-                    ))}
-                  </div>
-                </div>
+                      <span className="text-[#C1C7D0]">·</span>
+                      <span className="flex items-center gap-1 text-xs text-[#6B778C]">
+                        <Calendar className="h-3 w-3" />
+                        {formatDate(post.created_at)}
+                      </span>
+                    </div>
 
-                {/* Cover Image Thumbnail */}
-                {post.cover_image && (
-                  <Link
-                    href={`/blog/${post.slug}`}
-                    className="relative block h-44 w-full sm:h-36 sm:w-56 shrink-0 overflow-hidden rounded-xl border border-[#eef0f3] bg-[#f8f9fa] shadow-sm transition-transform duration-300 group-hover:scale-[1.02]"
-                  >
-                    <Image
-                      src={post.cover_image}
-                      alt={post.title}
-                      fill
-                      sizes="(max-width: 640px) 100vw, 224px"
-                      className="object-cover"
-                      priority={index < 2}
-                    />
-                  </Link>
-                )}
-              </div>
-            </article>
-          ))}
+                    <Link href={`/blog/${post.slug}`} className="block mt-2">
+                      <h2 className="text-lg font-bold tracking-tight text-[#172B4D] group-hover:text-[#0052CC] transition-colors sm:text-xl leading-snug">
+                        {post.title}
+                      </h2>
+                    </Link>
+
+                    <p className="mt-2 text-sm leading-relaxed text-[#5E6C84] line-clamp-2">
+                      {post.summary}
+                    </p>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                      {post.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            setSelectedTag(tag);
+                          }}
+                          className="cursor-pointer rounded bg-[#FAFBFC] border border-[#EBECF0] px-2 py-0.5 text-[11px] font-medium text-[#5E6C84] hover:border-[#DFE1E6] hover:text-[#172B4D] transition-colors"
+                        >
+                          #{tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Thumbnail */}
+                  {post.cover_image && (
+                    <Link
+                      href={`/blog/${post.slug}`}
+                      className="relative block h-40 w-full sm:h-32 sm:w-48 shrink-0 overflow-hidden rounded-lg border border-[#EBECF0] bg-[#FAFBFC] transition-transform duration-200 group-hover:border-[#B3D4FF]"
+                    >
+                      <Image
+                        src={post.cover_image}
+                        alt={post.title}
+                        fill
+                        sizes="(max-width: 640px) 100vw, 192px"
+                        className="object-cover"
+                      />
+                    </Link>
+                  )}
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
     </div>
