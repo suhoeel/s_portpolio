@@ -17,8 +17,8 @@ import "@xyflow/react/dist/style.css";
 import {
   ArrowRight,
   BookOpen,
-  ChevronDown,
-  ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   Compass,
   Layers,
   RotateCcw,
@@ -34,7 +34,6 @@ import {
   generateSemanticEmbedding,
   projectPCA2D,
 } from "@/lib/vector";
-import { openChat } from "@/components/ChatWidget";
 
 interface KnowledgeGraphProps {
   posts: Post[];
@@ -45,7 +44,7 @@ interface ParsedPostVector {
   vector: number[];
 }
 
-interface SearchSimilarityResult {
+interface RankedSimilarityItem {
   post: Post;
   similarity: number; // 0 ~ 1 (Cosine)
   distance: number; // >= 0 (Euclidean L2)
@@ -76,7 +75,7 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
   const [searchTopic, setSearchTopic] = useState("");
   const [metricMode, setMetricMode] = useState<"cosine" | "euclidean">("cosine");
   const [selectedPostId, setSelectedPostId] = useState<number | null>(null);
-  const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   // 1. 384차원 시맨틱 임베딩 벡터 로드 또는 생성
   const postVectors = useMemo<ParsedPostVector[]>(() => {
@@ -105,8 +104,8 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
     });
   }, [posts]);
 
-  // 2. 사용자가 입력한 검색어/주제의 실시간 384D 임베딩 계산 및 유사도 Top 랭킹 산출
-  const topicSearchResults = useMemo<SearchSimilarityResult[]>(() => {
+  // 2. 검색어 기준 실시간 유사도 Top 랭킹 (Nearest Neighbors from Query)
+  const queryRankings = useMemo<RankedSimilarityItem[]>(() => {
     const q = searchTopic.trim();
     if (!q) return [];
 
@@ -123,19 +122,42 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
       .map((item, index) => ({ ...item, rank: index + 1 }));
   }, [searchTopic, postVectors, metricMode]);
 
-  // Map of post ID to its search similarity for quick lookup
+  // Selected post object and vector distance calculations with other posts
+  const selectedPostData = useMemo(() => {
+    if (selectedPostId === null) return null;
+    const current = postVectors.find((pv) => pv.post.id === selectedPostId);
+    if (!current) return null;
+
+    const ranking: RankedSimilarityItem[] = postVectors
+      .filter((pv) => pv.post.id !== selectedPostId)
+      .map((pv) => ({
+        post: pv.post,
+        similarity: cosineSimilarity(current.vector, pv.vector),
+        distance: euclideanDistance(current.vector, pv.vector),
+        rank: 0,
+      }))
+      .sort((a, b) =>
+        metricMode === "cosine" ? b.similarity - a.similarity : a.distance - b.distance
+      )
+      .slice(0, 10)
+      .map((item, index) => ({ ...item, rank: index + 1 }));
+
+    return { post: current.post, vector: current.vector, ranking };
+  }, [selectedPostId, postVectors, metricMode]);
+
+  // Map of post ID to its search similarity for quick canvas lookup
   const searchSimilarityMap = useMemo(() => {
     const map = new Map<number, { rank: number; similarity: number; distance: number }>();
-    topicSearchResults.forEach((res) => {
+    queryRankings.forEach((res) => {
       map.set(res.post.id, { rank: res.rank, similarity: res.similarity, distance: res.distance });
     });
     return map;
-  }, [topicSearchResults]);
+  }, [queryRankings]);
 
   // 3. 384차원 고차원 벡터를 PCA 2D 좌표로 사영 (평면 투영)
   const pcaPositions = useMemo(() => {
     const rawVectors = postVectors.map((pv) => pv.vector);
-    return projectPCA2D(rawVectors, { width: 920, height: 580, padding: 90 });
+    return projectPCA2D(rawVectors, { width: 900, height: 560, padding: 90 });
   }, [postVectors]);
 
   // 4. 노드 & 엣지 빌드
@@ -143,7 +165,7 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
     const nodes: Node[] = [];
     const edges: Edge[] = [];
 
-    // Create Minimal Nodes: Only title & category dot by default, expands on selection
+    // Create Minimal Nodes: Category dot + Title
     postVectors.forEach((pv, idx) => {
       const pos = pcaPositions[idx] || { x: 300 + idx * 100, y: 300 };
       const color = getCategoryColor(pv.post.category);
@@ -276,233 +298,29 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
     setEdges(initialEdges);
   }, [initialNodes, initialEdges, setNodes, setEdges]);
 
-  // Selected post object and vector distance calculations with other posts
-  const selectedPostData = useMemo(() => {
-    if (selectedPostId === null) return null;
-    const current = postVectors.find((pv) => pv.post.id === selectedPostId);
-    if (!current) return null;
-
-    const ranking = postVectors
-      .filter((pv) => pv.post.id !== selectedPostId)
-      .map((pv) => ({
-        targetPost: pv.post,
-        similarity: cosineSimilarity(current.vector, pv.vector),
-        distance: euclideanDistance(current.vector, pv.vector),
-      }))
-      .sort((a, b) =>
-        metricMode === "cosine" ? b.similarity - a.similarity : a.distance - b.distance
-      );
-
-    return { post: current.post, vector: current.vector, ranking };
-  }, [selectedPostId, postVectors, metricMode]);
-
   const onNodeClick = useCallback((_: any, node: Node) => {
     const data = node.data as any;
     if (data?.post) {
       setSelectedPostId(data.post.id);
+      setIsSidebarOpen(true);
     }
   }, []);
 
+  // Determine what to display in the main Nearest Neighbors list
+  const activeRankingList = searchTopic.trim()
+    ? queryRankings
+    : selectedPostData
+    ? selectedPostData.ranking
+    : [];
+
+  const activeTitle = searchTopic.trim()
+    ? `‘${searchTopic}’ 검색 결과 Top ${queryRankings.length}`
+    : selectedPostData
+    ? `‘${selectedPostData.post.title}’의 최근접 이웃`
+    : "최근접 유사 글 (Nearest Neighbors)";
+
   return (
     <div className="relative h-full w-full overflow-hidden bg-[#f8fafc]">
-      {/* Left Overlay Floating Panel: Semantic Topic Similarity Search */}
-      <div className="absolute left-4 top-4 z-20 w-84 sm:w-96 max-w-[calc(100vw-32px)]">
-        {!isSearchPanelOpen ? (
-          // Collapsed Pill Button
-          <button
-            onClick={() => setIsSearchPanelOpen(true)}
-            className="flex items-center gap-2 rounded-full border border-[#e5e8eb] bg-white/95 px-4 py-2 text-xs font-semibold text-[#191f28] shadow-md backdrop-blur-md hover:bg-white hover:shadow-lg transition-all"
-          >
-            <Compass className="h-4 w-4 text-[#3182f6]" />
-            <span>주제 유사도 검색</span>
-            {searchTopic && (
-              <span className="rounded-full bg-blue-100 px-2 py-0.2 text-[10px] text-[#1d4ed8] font-bold">
-                &lsquo;{searchTopic}&rsquo;
-              </span>
-            )}
-            <ChevronDown className="h-3.5 w-3.5 text-[#8b95a1]" />
-          </button>
-        ) : (
-          // Expanded Semantic Topic Search Panel
-          <div className="flex flex-col max-h-[calc(100vh-140px)] rounded-2xl border border-[#e5e8eb] bg-white/95 p-4 shadow-xl backdrop-blur-md transition-all animate-in fade-in zoom-in-95 duration-150">
-            {/* Header */}
-            <div className="flex items-center justify-between pb-3 border-b border-[#f2f4f6]">
-              <div className="flex items-center gap-2">
-                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-50 text-[#3182f6]">
-                  <Compass className="h-4 w-4" />
-                </div>
-                <div>
-                  <h2 className="text-xs font-bold text-[#191f28]">주제별 시맨틱 유사도 검색</h2>
-                  <p className="text-[10px] text-[#8b95a1]">384D 임베딩 벡터 코사인/유클리드 거리</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setIsSearchPanelOpen(false)}
-                className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-[#8b95a1] hover:bg-[#f2f4f6] hover:text-[#191f28]"
-                title="패널 접기"
-              >
-                <span>접기</span>
-                <ChevronUp className="h-3 w-3" />
-              </button>
-            </div>
-
-            {/* Topic Input Bar */}
-            <div className="mt-3">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#8b95a1]" />
-                <input
-                  type="text"
-                  value={searchTopic}
-                  onChange={(e) => setSearchTopic(e.target.value)}
-                  placeholder="관심 주제나 키워드 입력 (예: 하이브리드 검색)..."
-                  className="w-full rounded-xl border border-[#e5e8eb] bg-[#fafbfc] pl-8 pr-8 py-2 text-xs text-[#191f28] placeholder:text-[#8b95a1] focus:border-[#3182f6] focus:bg-white focus:outline-none transition-all shadow-xs"
-                />
-                {searchTopic && (
-                  <button
-                    onClick={() => setSearchTopic("")}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8b95a1] hover:text-[#191f28]"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-
-              {/* Topic Suggestion Chips */}
-              <div className="mt-2 flex flex-wrap items-center gap-1">
-                <span className="text-[10px] text-[#8b95a1] mr-0.5">추천:</span>
-                {SUGGESTED_TOPICS.map((topic) => (
-                  <button
-                    key={topic}
-                    onClick={() => setSearchTopic(topic)}
-                    className="rounded-md bg-[#f2f4f6] px-1.5 py-0.5 text-[10px] text-[#4e5968] hover:bg-blue-50 hover:text-[#3182f6] transition-colors"
-                  >
-                    #{topic}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Metric Mode Toggle */}
-            <div className="mt-3 flex items-center justify-between text-[11px] border-t border-[#f2f4f6] pt-2.5">
-              <span className="text-[#6b7684]">거리 측정 단위:</span>
-              <div className="flex rounded-lg border border-[#e5e8eb] bg-[#fafbfc] p-0.5">
-                <button
-                  onClick={() => setMetricMode("cosine")}
-                  className={`rounded-md px-2 py-0.5 transition-colors ${
-                    metricMode === "cosine"
-                      ? "bg-white text-[#3182f6] shadow-xs font-semibold"
-                      : "text-[#6b7684]"
-                  }`}
-                >
-                  코사인 유사도 (%)
-                </button>
-                <button
-                  onClick={() => setMetricMode("euclidean")}
-                  className={`rounded-md px-2 py-0.5 transition-colors ${
-                    metricMode === "euclidean"
-                      ? "bg-white text-[#3182f6] shadow-xs font-semibold"
-                      : "text-[#6b7684]"
-                  }`}
-                >
-                  유클리드 거리 (L2)
-                </button>
-              </div>
-            </div>
-
-            {/* Top 10 Similar Posts List */}
-            {searchTopic.trim() && (
-              <div className="mt-3 flex-1 overflow-y-auto pr-1 border-t border-[#f2f4f6] pt-2.5">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-bold text-[#191f28] flex items-center gap-1">
-                    <TrendingUp className="h-3.5 w-3.5 text-[#3182f6]" />
-                    <span>&lsquo;{searchTopic}&rsquo;와 유사한 글 Top {topicSearchResults.length}</span>
-                  </span>
-                  <span className="text-[10px] text-[#8b95a1]">
-                    {metricMode === "cosine" ? "높을수록 일치" : "낮을수록 근접"}
-                  </span>
-                </div>
-
-                <div className="space-y-1.5">
-                  {topicSearchResults.map((res) => {
-                    const pct = Math.max(0, Math.min(100, Math.round(res.similarity * 100)));
-                    const isSelected = selectedPostId === res.post.id;
-
-                    return (
-                      <div
-                        key={res.post.id}
-                        onClick={() => setSelectedPostId(res.post.id)}
-                        className={`group cursor-pointer rounded-xl border p-2.5 transition-all ${
-                          isSelected
-                            ? "border-[#3182f6] bg-blue-50/70 shadow-xs"
-                            : res.rank === 1
-                            ? "border-amber-200 bg-amber-50/40 hover:bg-amber-50/70"
-                            : "border-[#f0f2f5] bg-[#fafbfc] hover:border-[#d1d6db] hover:bg-white"
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <span
-                              className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold ${
-                                res.rank === 1
-                                  ? "bg-amber-500 text-white"
-                                  : res.rank === 2
-                                  ? "bg-slate-400 text-white"
-                                  : res.rank === 3
-                                  ? "bg-amber-700/60 text-white"
-                                  : "bg-[#e5e8eb] text-[#6b7684]"
-                              }`}
-                            >
-                              {res.rank}
-                            </span>
-                            <span className="truncate text-xs font-semibold text-[#191f28] group-hover:text-[#3182f6]">
-                              {res.post.title}
-                            </span>
-                          </div>
-
-                          {/* Metric Value */}
-                          <div className="text-right shrink-0">
-                            <span
-                              className={`font-mono text-xs font-bold ${
-                                res.similarity >= 0.8
-                                  ? "text-[#1d4ed8]"
-                                  : res.similarity >= 0.7
-                                  ? "text-[#3182f6]"
-                                  : "text-[#6b7684]"
-                              }`}
-                            >
-                              {metricMode === "cosine"
-                                ? `${pct}%`
-                                : `L2 ${res.distance.toFixed(3)}`}
-                            </span>
-                            <span className="block text-[9px] text-[#8b95a1] font-mono">
-                              ({res.similarity.toFixed(3)})
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Gauge Bar */}
-                        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-[#e5e8eb]">
-                          <div
-                            className={`h-full rounded-full transition-all duration-300 ${
-                              pct >= 80
-                                ? "bg-gradient-to-r from-blue-500 to-indigo-600"
-                                : pct >= 65
-                                ? "bg-blue-400"
-                                : "bg-slate-300"
-                            }`}
-                            style={{ width: `${pct}%` }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
       {/* Main Flow Canvas */}
       <ReactFlow
         nodes={nodes}
@@ -523,16 +341,117 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
             const data = node.data as any;
             return data?.post ? getCategoryColor(data.post.category).border : "#e2e8f0";
           }}
-          className="!rounded-xl !border-slate-200 !bg-white/90 !right-4 !bottom-4"
+          className={`!rounded-xl !border-slate-200 !bg-white/90 !bottom-4 transition-all duration-300 ${
+            isSidebarOpen ? "!right-[400px]" : "!right-4"
+          }`}
         />
       </ReactFlow>
 
-      {/* Right Slide-over Inspector Panel (When a post is clicked) */}
-      {selectedPostData && (
-        <div className="absolute right-4 top-4 bottom-4 w-96 max-w-[calc(100vw-32px)] z-30 flex flex-col rounded-2xl border border-[#e5e8eb] bg-white/95 p-5 shadow-2xl backdrop-blur-md animate-in slide-in-from-right-4 duration-200">
-          {/* Header */}
-          <div className="flex items-start justify-between gap-3 border-b border-[#f2f4f6] pb-3">
+      {/* Floating Toggle Pill when Sidebar is Closed */}
+      {!isSidebarOpen && (
+        <button
+          onClick={() => setIsSidebarOpen(true)}
+          className="absolute right-4 top-4 z-20 flex items-center gap-2 rounded-full border border-[#e5e8eb] bg-white/95 px-4 py-2.5 text-xs font-semibold text-[#191f28] shadow-md backdrop-blur-md hover:bg-white hover:shadow-lg transition-all"
+        >
+          <Compass className="h-4 w-4 text-[#3182f6]" />
+          <span>벡터 인스펙터 열기</span>
+          <ChevronLeft className="h-3.5 w-3.5 text-[#8b95a1]" />
+        </button>
+      )}
+
+      {/* Google Projector Style Right Sidebar Panel (Full Height) */}
+      <aside
+        className={`absolute right-0 top-0 bottom-0 z-30 flex w-96 max-w-[calc(100vw-20px)] flex-col border-l border-[#e5e8eb] bg-white/95 shadow-2xl backdrop-blur-md transition-transform duration-300 ${
+          isSidebarOpen ? "translate-x-0" : "translate-x-full"
+        }`}
+      >
+        {/* Sidebar Header */}
+        <div className="flex items-center justify-between border-b border-[#f2f4f6] px-5 py-4">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-50 text-[#3182f6]">
+              <Compass className="h-4 w-4" />
+            </div>
             <div>
+              <h2 className="text-sm font-bold text-[#191f28]">벡터 스페이스 인스펙터</h2>
+              <p className="text-[10px] text-[#8b95a1]">Google Projector · PCA 2D</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsSidebarOpen(false)}
+            className="rounded-lg p-1.5 text-[#8b95a1] hover:bg-[#f2f4f6] hover:text-[#191f28]"
+            title="사이드바 접기"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Section 1: Search & Topic Input */}
+        <div className="border-b border-[#f2f4f6] px-5 py-3.5 bg-[#fafbfc]/70">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#8b95a1]" />
+            <input
+              type="text"
+              value={searchTopic}
+              onChange={(e) => setSearchTopic(e.target.value)}
+              placeholder="관심 주제 또는 키워드 입력..."
+              className="w-full rounded-xl border border-[#e5e8eb] bg-white pl-8 pr-8 py-2 text-xs text-[#191f28] placeholder:text-[#8b95a1] focus:border-[#3182f6] focus:outline-none transition-all shadow-xs"
+            />
+            {searchTopic && (
+              <button
+                onClick={() => setSearchTopic("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8b95a1] hover:text-[#191f28]"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Quick Suggestion Chips */}
+          <div className="mt-2 flex flex-wrap items-center gap-1">
+            <span className="text-[10px] text-[#8b95a1] mr-0.5">추천:</span>
+            {SUGGESTED_TOPICS.map((topic) => (
+              <button
+                key={topic}
+                onClick={() => setSearchTopic(topic)}
+                className="rounded-md bg-white border border-[#eef0f3] px-1.5 py-0.5 text-[10px] text-[#4e5968] hover:border-[#3182f6] hover:text-[#3182f6] transition-colors"
+              >
+                #{topic}
+              </button>
+            ))}
+          </div>
+
+          {/* Metric Selector Toggle */}
+          <div className="mt-2.5 flex items-center justify-between text-[11px] pt-2 border-t border-[#f0f2f5]">
+            <span className="text-[#6b7684]">거리 기준:</span>
+            <div className="flex rounded-lg border border-[#e5e8eb] bg-white p-0.5">
+              <button
+                onClick={() => setMetricMode("cosine")}
+                className={`rounded-md px-2 py-0.5 transition-colors ${
+                  metricMode === "cosine"
+                    ? "bg-[#3182f6] text-white font-semibold"
+                    : "text-[#6b7684] hover:text-[#191f28]"
+                }`}
+              >
+                코사인 유사도 (%)
+              </button>
+              <button
+                onClick={() => setMetricMode("euclidean")}
+                className={`rounded-md px-2 py-0.5 transition-colors ${
+                  metricMode === "euclidean"
+                    ? "bg-[#3182f6] text-white font-semibold"
+                    : "text-[#6b7684] hover:text-[#191f28]"
+                }`}
+              >
+                유클리드 거리 (L2)
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Section 2: Selected Post Header (If a node is selected) */}
+        {selectedPostData && (
+          <div className="border-b border-[#f2f4f6] bg-blue-50/40 px-5 py-3">
+            <div className="flex items-center justify-between">
               <span
                 className="rounded-md px-2 py-0.5 text-[10px] font-bold"
                 style={{
@@ -542,52 +461,94 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
               >
                 {selectedPostData.post.category}
               </span>
-              <h2 className="mt-1.5 text-base font-bold text-[#191f28] leading-snug">
-                {selectedPostData.post.title}
-              </h2>
+              <button
+                onClick={() => setSelectedPostId(null)}
+                className="text-[10px] text-[#8b95a1] hover:text-[#191f28] underline"
+              >
+                선택 해제
+              </button>
             </div>
-            <button
-              onClick={() => setSelectedPostId(null)}
-              className="rounded-lg p-1 text-[#8b95a1] hover:bg-[#f2f4f6] hover:text-[#191f28]"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            <h3 className="mt-1 text-xs font-bold text-[#191f28] line-clamp-1">
+              {selectedPostData.post.title}
+            </h3>
+            <p className="mt-1 text-[11px] text-[#6b7684] line-clamp-2 leading-relaxed">
+              {selectedPostData.post.summary}
+            </p>
+            <div className="mt-2 flex items-center justify-between">
+              <Link
+                href={`/blog/${selectedPostData.post.slug}`}
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#3182f6] hover:underline"
+              >
+                <BookOpen className="h-3 w-3" />
+                <span>본문 읽으러 가기</span>
+                <ArrowRight className="h-3 w-3" />
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {/* Section 3: Nearest Neighbors List (Top 10 유사도 랭킹) */}
+        <div className="flex-1 overflow-y-auto px-5 py-3">
+          <div className="flex items-center justify-between mb-2.5">
+            <span className="text-xs font-bold text-[#191f28] flex items-center gap-1.5">
+              <TrendingUp className="h-3.5 w-3.5 text-[#3182f6]" />
+              <span className="truncate">{activeTitle}</span>
+            </span>
+            <span className="text-[10px] text-[#8b95a1] shrink-0">
+              {metricMode === "cosine" ? "높을수록 일치" : "낮을수록 근접"}
+            </span>
           </div>
 
-          {/* Post Summary */}
-          <p className="mt-3 text-xs leading-relaxed text-[#4e5968] line-clamp-3 bg-[#fafbfc] p-2.5 rounded-xl border border-[#f0f2f5]">
-            {selectedPostData.post.summary}
-          </p>
-
-          {/* Vector Distance Ranking Section with other posts */}
-          <div className="mt-4 flex-1 overflow-y-auto pr-1">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-bold text-[#191f28] flex items-center gap-1.5">
-                <Layers className="h-3.5 w-3.5 text-[#3182f6]" />
-                <span>이 글과 다른 글의 유사도 거리</span>
-              </span>
-              <span className="text-[10px] text-[#8b95a1]">
-                기준: {metricMode === "cosine" ? "코사인 유사도" : "유클리드 거리"}
-              </span>
+          {activeRankingList.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-[#e5e8eb] p-6 text-center text-xs text-[#8b95a1] mt-4">
+              <Compass className="h-8 w-8 mx-auto mb-2 text-slate-300" />
+              <p className="font-semibold text-[#4e5968]">최근접 이웃을 탐색해보세요</p>
+              <p className="mt-1 text-[11px] leading-relaxed">
+                상단 검색창에 키워드를 입력하거나 캔버스에서 글 노드를 클릭하면 벡터 거리가 가까운 순으로 표시됩니다.
+              </p>
             </div>
-
+          ) : (
             <div className="space-y-2">
-              {selectedPostData.ranking.map((item) => {
+              {activeRankingList.map((item) => {
                 const pct = Math.max(0, Math.min(100, Math.round(item.similarity * 100)));
+                const isSelected = selectedPostId === item.post.id;
 
                 return (
                   <div
-                    key={item.targetPost.id}
-                    onClick={() => setSelectedPostId(item.targetPost.id)}
-                    className="group cursor-pointer rounded-xl border border-[#f0f2f5] bg-white p-2.5 hover:border-[#d1d6db] transition-all"
+                    key={item.post.id}
+                    onClick={() => setSelectedPostId(item.post.id)}
+                    className={`group cursor-pointer rounded-xl border p-2.5 transition-all ${
+                      isSelected
+                        ? "border-[#3182f6] bg-blue-50/70 shadow-xs"
+                        : item.rank === 1
+                        ? "border-amber-200 bg-amber-50/40 hover:bg-amber-50/70"
+                        : "border-[#f0f2f5] bg-white hover:border-[#d1d6db] hover:bg-[#fafbfc]"
+                    }`}
                   >
-                    <div className="flex items-center justify-between text-xs font-semibold text-[#191f28]">
-                      <span className="truncate max-w-[200px] group-hover:text-[#3182f6] transition-colors">
-                        {item.targetPost.title}
-                      </span>
-                      <div className="text-right">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
                         <span
-                          className={`font-mono text-xs ${
+                          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold ${
+                            item.rank === 1
+                              ? "bg-amber-500 text-white"
+                              : item.rank === 2
+                              ? "bg-slate-400 text-white"
+                              : item.rank === 3
+                              ? "bg-amber-700/60 text-white"
+                              : "bg-[#e5e8eb] text-[#6b7684]"
+                          }`}
+                        >
+                          {item.rank}
+                        </span>
+                        <span className="truncate text-xs font-semibold text-[#191f28] group-hover:text-[#3182f6]">
+                          {item.post.title}
+                        </span>
+                      </div>
+
+                      {/* Similarity / Distance Metrics */}
+                      <div className="text-right shrink-0">
+                        <span
+                          className={`font-mono text-xs font-bold ${
                             item.similarity >= 0.8
                               ? "text-[#1d4ed8]"
                               : item.similarity >= 0.7
@@ -605,8 +566,8 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
                       </div>
                     </div>
 
-                    {/* Similarity Bar */}
-                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#e5e8eb]">
+                    {/* Progress Gauge */}
+                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#f2f4f6]">
                       <div
                         className={`h-full rounded-full transition-all duration-300 ${
                           pct >= 80
@@ -618,50 +579,13 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
                         style={{ width: `${pct}%` }}
                       />
                     </div>
-
-                    <div className="mt-2 flex items-center justify-between text-[10px] text-[#8b95a1]">
-                      <span>카테고리: {item.targetPost.category}</span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openChat(
-                            `'${selectedPostData.post.title}' 글과 '${item.targetPost.title}' 글의 핵심 개념적 연관성과 차이점을 비교 설명해줘.`
-                          );
-                        }}
-                        className="inline-flex items-center gap-0.5 text-[#3182f6] hover:underline"
-                      >
-                        <Sparkles className="h-2.5 w-2.5" />
-                        <span>AI 비교</span>
-                      </button>
-                    </div>
                   </div>
                 );
               })}
             </div>
-          </div>
-
-          {/* Bottom Actions */}
-          <div className="mt-4 pt-3 border-t border-[#f2f4f6] flex flex-col gap-2">
-            <Link
-              href={`/blog/${selectedPostData.post.slug}`}
-              className="flex items-center justify-center gap-2 rounded-xl bg-[#191f28] py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-[#333d4b] transition-colors"
-            >
-              <BookOpen className="h-3.5 w-3.5" />
-              <span>선택한 글 본문 읽기</span>
-              <ArrowRight className="h-3.5 w-3.5" />
-            </Link>
-            <button
-              onClick={() =>
-                openChat(`'${selectedPostData.post.title}' 포스트의 핵심 내용을 요약해줘.`)
-              }
-              className="flex items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50/70 py-2 text-xs font-semibold text-[#3182f6] hover:bg-blue-100/70 transition-colors"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              <span>이 글의 핵심 AI 질의하기</span>
-            </button>
-          </div>
+          )}
         </div>
-      )}
+      </aside>
     </div>
   );
 }

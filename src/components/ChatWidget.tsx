@@ -97,19 +97,7 @@ export function ChatWidget() {
 
   return (
     <>
-      {/* Launcher */}
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className={cn(
-          "fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-full bg-[#3182f6] px-4 py-3 text-sm font-semibold text-white shadow-[0_8px_24px_rgba(49,130,246,0.35)] transition-all duration-300 hover:bg-[#1b64da]",
-          open ? "pointer-events-none scale-90 opacity-0" : "scale-100 opacity-100"
-        )}
-      >
-        <Sparkles className="h-4 w-4" />
-        AI에게 묻기
-      </button>
-
-      {/* Panel */}
+      {/* Panel (opens only on explicit trigger) */}
       <div
         className={cn(
           "fixed bottom-6 right-6 z-50 flex h-[min(600px,calc(100vh-6rem))] w-[calc(100vw-3rem)] max-w-[400px] origin-bottom-right flex-col overflow-hidden rounded-2xl border border-[#eef0f3] bg-white shadow-[0_20px_60px_rgba(0,0,0,0.12)] transition-all duration-300",
