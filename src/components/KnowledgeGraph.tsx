@@ -12,7 +12,6 @@ import {
   Node,
   Edge,
   BackgroundVariant,
-  Panel,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
@@ -22,11 +21,10 @@ import {
   ChevronUp,
   Compass,
   Layers,
-  Network,
   RotateCcw,
   Search,
-  Sliders,
   Sparkles,
+  TrendingUp,
   X,
 } from "lucide-react";
 import type { Post } from "@/types";
@@ -47,10 +45,11 @@ interface ParsedPostVector {
   vector: number[];
 }
 
-interface PostDistanceResult {
-  targetPost: Post;
+interface SearchSimilarityResult {
+  post: Post;
   similarity: number; // 0 ~ 1 (Cosine)
   distance: number; // >= 0 (Euclidean L2)
+  rank: number;
 }
 
 const CATEGORY_COLORS: Record<string, { bg: string; text: string; dot: string; border: string }> = {
@@ -65,14 +64,21 @@ function getCategoryColor(category: string) {
   return CATEGORY_COLORS[category] || CATEGORY_COLORS.default;
 }
 
+const SUGGESTED_TOPICS = [
+  "하이브리드 검색",
+  "BM25 알고리즘",
+  "pgvector 임베딩",
+  "RRF 순위 결합",
+  "지식 그래프 시각화",
+];
+
 export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
-  const [similarityThreshold, setSimilarityThreshold] = useState(0.65);
+  const [searchTopic, setSearchTopic] = useState("");
   const [metricMode, setMetricMode] = useState<"cosine" | "euclidean">("cosine");
   const [selectedPostId, setSelectedPostId] = useState<number | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [isControlsOpen, setIsControlsOpen] = useState(true);
+  const [isSearchPanelOpen, setIsSearchPanelOpen] = useState(true);
 
-  // 1. Parse or generate 384-dim semantic embeddings for each post
+  // 1. 384차원 시맨틱 임베딩 벡터 로드 또는 생성
   const postVectors = useMemo<ParsedPostVector[]>(() => {
     return posts.map((p) => {
       let vec: number[];
@@ -99,13 +105,40 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
     });
   }, [posts]);
 
-  // 2. Project 384-dimensional vectors down to 2D coordinates using PCA
+  // 2. 사용자가 입력한 검색어/주제의 실시간 384D 임베딩 계산 및 유사도 Top 랭킹 산출
+  const topicSearchResults = useMemo<SearchSimilarityResult[]>(() => {
+    const q = searchTopic.trim();
+    if (!q) return [];
+
+    const queryVec = generateSemanticEmbedding(q);
+
+    return postVectors
+      .map((pv) => {
+        const sim = cosineSimilarity(queryVec, pv.vector);
+        const dist = euclideanDistance(queryVec, pv.vector);
+        return { post: pv.post, similarity: sim, distance: dist, rank: 0 };
+      })
+      .sort((a, b) => (metricMode === "cosine" ? b.similarity - a.similarity : a.distance - b.distance))
+      .slice(0, 10)
+      .map((item, index) => ({ ...item, rank: index + 1 }));
+  }, [searchTopic, postVectors, metricMode]);
+
+  // Map of post ID to its search similarity for quick lookup
+  const searchSimilarityMap = useMemo(() => {
+    const map = new Map<number, { rank: number; similarity: number; distance: number }>();
+    topicSearchResults.forEach((res) => {
+      map.set(res.post.id, { rank: res.rank, similarity: res.similarity, distance: res.distance });
+    });
+    return map;
+  }, [topicSearchResults]);
+
+  // 3. 384차원 고차원 벡터를 PCA 2D 좌표로 사영 (평면 투영)
   const pcaPositions = useMemo(() => {
     const rawVectors = postVectors.map((pv) => pv.vector);
-    return projectPCA2D(rawVectors, { width: 900, height: 560, padding: 90 });
+    return projectPCA2D(rawVectors, { width: 920, height: 580, padding: 90 });
   }, [postVectors]);
 
-  // 3. Build graph Nodes & Edges dynamically
+  // 4. 노드 & 엣지 빌드
   const { initialNodes, initialEdges } = useMemo(() => {
     const nodes: Node[] = [];
     const edges: Edge[] = [];
@@ -115,10 +148,8 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
       const pos = pcaPositions[idx] || { x: 300 + idx * 100, y: 300 };
       const color = getCategoryColor(pv.post.category);
       const isSelected = pv.post.id === selectedPostId;
-      const isMatchSearch =
-        !searchQuery ||
-        pv.post.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        pv.post.tags.some((t) => t.toLowerCase().includes(searchQuery.toLowerCase()));
+      const searchMatch = searchSimilarityMap.get(pv.post.id);
+      const isTopRanked = searchMatch && searchMatch.rank <= 3;
 
       nodes.push({
         id: `post-${pv.post.id}`,
@@ -128,15 +159,32 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
           vector: pv.vector,
           label: (
             <div className="flex flex-col text-left">
-              {/* Category Dot & Badge */}
-              <div className="flex items-center gap-1.5 mb-1">
-                <span
-                  className="h-2 w-2 rounded-full shrink-0"
-                  style={{ backgroundColor: color.dot }}
-                />
-                <span className="text-[10px] font-semibold text-[#8b95a1] truncate">
-                  {pv.post.category}
-                </span>
+              {/* Category Dot & Search Rank Badge */}
+              <div className="flex items-center justify-between gap-1 mb-1">
+                <div className="flex items-center gap-1.5 truncate">
+                  <span
+                    className="h-2 w-2 rounded-full shrink-0"
+                    style={{ backgroundColor: color.dot }}
+                  />
+                  <span className="text-[10px] font-semibold text-[#8b95a1] truncate">
+                    {pv.post.category}
+                  </span>
+                </div>
+
+                {/* Show Search Similarity Badge if a topic is searched */}
+                {searchMatch && (
+                  <span
+                    className={`rounded-full px-1.5 py-0.2 text-[10px] font-bold tracking-tight shrink-0 ${
+                      searchMatch.rank === 1
+                        ? "bg-amber-100 text-amber-800 border border-amber-300"
+                        : searchMatch.rank <= 3
+                        ? "bg-blue-100 text-blue-800 border border-blue-300"
+                        : "bg-slate-100 text-slate-600"
+                    }`}
+                  >
+                    #{searchMatch.rank} · {(searchMatch.similarity * 100).toFixed(0)}%
+                  </span>
+                )}
               </div>
 
               {/* Title (Always prominent) */}
@@ -154,18 +202,19 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
           ),
         },
         style: {
-          background: isSelected ? "#f0f7ff" : "#ffffff",
+          background: isSelected ? "#f0f7ff" : isTopRanked ? "#fefce8" : "#ffffff",
           border: isSelected
             ? "2.5px solid #3182f6"
-            : isMatchSearch
-            ? `1.5px solid ${color.border}`
-            : "1.5px solid #e5e8eb",
-          opacity: isMatchSearch ? 1 : 0.35,
+            : isTopRanked
+            ? "2px solid #eab308"
+            : `1.5px solid ${color.border}`,
           borderRadius: "14px",
           padding: "10px 12px",
           width: isSelected ? 230 : 190,
           boxShadow: isSelected
             ? "0 10px 28px rgba(49, 130, 246, 0.25)"
+            : isTopRanked
+            ? "0 6px 20px rgba(234, 179, 8, 0.2)"
             : "0 2px 10px rgba(0, 0, 0, 0.04)",
           cursor: "pointer",
           transition: "all 0.2s ease-in-out",
@@ -173,24 +222,20 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
       });
     });
 
-    // Create Edges based on Cosine Similarity
+    // Create Edges for strongly related posts (similarity >= 0.68)
     for (let i = 0; i < postVectors.length; i++) {
       for (let j = i + 1; j < postVectors.length; j++) {
         const p1 = postVectors[i];
         const p2 = postVectors[j];
         const sim = cosineSimilarity(p1.vector, p2.vector);
 
-        if (sim >= similarityThreshold) {
+        if (sim >= 0.68) {
           const isRelatedToSelected =
             selectedPostId !== null &&
             (p1.post.id === selectedPostId || p2.post.id === selectedPostId);
 
-          const strokeWidth = Math.max(1.5, Math.min(4, (sim - 0.5) * 7));
-          const strokeColor = isRelatedToSelected
-            ? "#3182f6"
-            : sim >= 0.82
-            ? "#60a5fa"
-            : "#cbd5e1";
+          const strokeWidth = Math.max(1.5, Math.min(3.5, (sim - 0.5) * 6));
+          const strokeColor = isRelatedToSelected ? "#3182f6" : "#cbd5e1";
 
           edges.push({
             id: `edge-${p1.post.id}-${p2.post.id}`,
@@ -221,7 +266,7 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
     }
 
     return { initialNodes: nodes, initialEdges: edges };
-  }, [postVectors, pcaPositions, similarityThreshold, selectedPostId, searchQuery]);
+  }, [postVectors, pcaPositions, selectedPostId, searchSimilarityMap]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
@@ -231,13 +276,13 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
     setEdges(initialEdges);
   }, [initialNodes, initialEdges, setNodes, setEdges]);
 
-  // Selected post object and vector distance calculations
+  // Selected post object and vector distance calculations with other posts
   const selectedPostData = useMemo(() => {
     if (selectedPostId === null) return null;
     const current = postVectors.find((pv) => pv.post.id === selectedPostId);
     if (!current) return null;
 
-    const ranking: PostDistanceResult[] = postVectors
+    const ranking = postVectors
       .filter((pv) => pv.post.id !== selectedPostId)
       .map((pv) => ({
         targetPost: pv.post,
@@ -260,24 +305,26 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-[#f8fafc]">
-      {/* Overlay Floating Control Island (Can be toggled open/closed) */}
-      <div className="absolute left-4 top-4 z-20 max-w-sm sm:max-w-md">
-        {!isControlsOpen ? (
+      {/* Left Overlay Floating Panel: Semantic Topic Similarity Search */}
+      <div className="absolute left-4 top-4 z-20 w-84 sm:w-96 max-w-[calc(100vw-32px)]">
+        {!isSearchPanelOpen ? (
           // Collapsed Pill Button
           <button
-            onClick={() => setIsControlsOpen(true)}
+            onClick={() => setIsSearchPanelOpen(true)}
             className="flex items-center gap-2 rounded-full border border-[#e5e8eb] bg-white/95 px-4 py-2 text-xs font-semibold text-[#191f28] shadow-md backdrop-blur-md hover:bg-white hover:shadow-lg transition-all"
           >
             <Compass className="h-4 w-4 text-[#3182f6]" />
-            <span>시맨틱 컨트롤</span>
-            <span className="rounded-full bg-blue-50 px-1.5 py-0.2 text-[10px] text-[#3182f6]">
-              {(similarityThreshold * 100).toFixed(0)}%
-            </span>
+            <span>주제 유사도 검색</span>
+            {searchTopic && (
+              <span className="rounded-full bg-blue-100 px-2 py-0.2 text-[10px] text-[#1d4ed8] font-bold">
+                &lsquo;{searchTopic}&rsquo;
+              </span>
+            )}
             <ChevronDown className="h-3.5 w-3.5 text-[#8b95a1]" />
           </button>
         ) : (
-          // Expanded Floating Control Panel
-          <div className="rounded-2xl border border-[#e5e8eb] bg-white/95 p-4 shadow-xl backdrop-blur-md transition-all animate-in fade-in zoom-in-95 duration-150">
+          // Expanded Semantic Topic Search Panel
+          <div className="flex flex-col max-h-[calc(100vh-140px)] rounded-2xl border border-[#e5e8eb] bg-white/95 p-4 shadow-xl backdrop-blur-md transition-all animate-in fade-in zoom-in-95 duration-150">
             {/* Header */}
             <div className="flex items-center justify-between pb-3 border-b border-[#f2f4f6]">
               <div className="flex items-center gap-2">
@@ -285,95 +332,173 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
                   <Compass className="h-4 w-4" />
                 </div>
                 <div>
-                  <h2 className="text-xs font-bold text-[#191f28]">시맨틱 벡터 스페이스</h2>
-                  <p className="text-[10px] text-[#8b95a1]">384D pgvector · PCA 2D</p>
+                  <h2 className="text-xs font-bold text-[#191f28]">주제별 시맨틱 유사도 검색</h2>
+                  <p className="text-[10px] text-[#8b95a1]">384D 임베딩 벡터 코사인/유클리드 거리</p>
                 </div>
               </div>
               <button
-                onClick={() => setIsControlsOpen(false)}
+                onClick={() => setIsSearchPanelOpen(false)}
                 className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-[#8b95a1] hover:bg-[#f2f4f6] hover:text-[#191f28]"
-                title="컨트롤 접기"
+                title="패널 접기"
               >
                 <span>접기</span>
                 <ChevronUp className="h-3 w-3" />
               </button>
             </div>
 
-            {/* Controls Body */}
-            <div className="mt-3 flex flex-col gap-3">
-              {/* Threshold Slider */}
-              <div className="flex items-center justify-between text-xs text-[#4e5968]">
-                <span className="flex items-center gap-1.5 font-medium">
-                  <Sliders className="h-3.5 w-3.5 text-[#3182f6]" />
-                  <span>연결 유사도 임계값:</span>
-                </span>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="range"
-                    min="0.50"
-                    max="0.90"
-                    step="0.05"
-                    value={similarityThreshold}
-                    onChange={(e) => setSimilarityThreshold(parseFloat(e.target.value))}
-                    className="h-1.5 w-24 cursor-pointer accent-[#3182f6]"
-                  />
-                  <span className="w-8 text-right font-bold text-[#191f28]">
-                    {(similarityThreshold * 100).toFixed(0)}%
-                  </span>
-                </div>
-              </div>
-
-              {/* Metric Toggle */}
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-[#6b7684]">거리 기준:</span>
-                <div className="flex rounded-lg border border-[#e5e8eb] bg-[#fafbfc] p-0.5 text-[11px] font-medium">
+            {/* Topic Input Bar */}
+            <div className="mt-3">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#8b95a1]" />
+                <input
+                  type="text"
+                  value={searchTopic}
+                  onChange={(e) => setSearchTopic(e.target.value)}
+                  placeholder="관심 주제나 키워드 입력 (예: 하이브리드 검색)..."
+                  className="w-full rounded-xl border border-[#e5e8eb] bg-[#fafbfc] pl-8 pr-8 py-2 text-xs text-[#191f28] placeholder:text-[#8b95a1] focus:border-[#3182f6] focus:bg-white focus:outline-none transition-all shadow-xs"
+                />
+                {searchTopic && (
                   <button
-                    onClick={() => setMetricMode("cosine")}
-                    className={`rounded-md px-2 py-0.5 transition-colors ${
-                      metricMode === "cosine"
-                        ? "bg-white text-[#3182f6] shadow-xs font-semibold"
-                        : "text-[#6b7684]"
-                    }`}
+                    onClick={() => setSearchTopic("")}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8b95a1] hover:text-[#191f28]"
                   >
-                    코사인 유사도
-                  </button>
-                  <button
-                    onClick={() => setMetricMode("euclidean")}
-                    className={`rounded-md px-2 py-0.5 transition-colors ${
-                      metricMode === "euclidean"
-                        ? "bg-white text-[#3182f6] shadow-xs font-semibold"
-                        : "text-[#6b7684]"
-                    }`}
-                  >
-                    유클리드 거리
-                  </button>
-                </div>
-              </div>
-
-              {/* Search & Reset */}
-              <div className="flex items-center gap-2 pt-1 border-t border-[#f2f4f6]">
-                <div className="relative flex-1">
-                  <Search className="absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-[#8b95a1]" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="포스트 키워드 검색..."
-                    className="w-full rounded-lg border border-[#e5e8eb] bg-[#fafbfc] pl-7 pr-2 py-1 text-xs text-[#191f28] placeholder:text-[#8b95a1] focus:border-[#3182f6] focus:bg-white focus:outline-none"
-                  />
-                </div>
-                {selectedPostId && (
-                  <button
-                    onClick={() => setSelectedPostId(null)}
-                    className="flex items-center gap-1 rounded-lg bg-[#f2f4f6] px-2 py-1 text-[11px] font-medium text-[#4e5968] hover:bg-[#e5e8eb]"
-                    title="선택 해제"
-                  >
-                    <RotateCcw className="h-3 w-3" />
-                    <span>초기화</span>
+                    <X className="h-3.5 w-3.5" />
                   </button>
                 )}
               </div>
+
+              {/* Topic Suggestion Chips */}
+              <div className="mt-2 flex flex-wrap items-center gap-1">
+                <span className="text-[10px] text-[#8b95a1] mr-0.5">추천:</span>
+                {SUGGESTED_TOPICS.map((topic) => (
+                  <button
+                    key={topic}
+                    onClick={() => setSearchTopic(topic)}
+                    className="rounded-md bg-[#f2f4f6] px-1.5 py-0.5 text-[10px] text-[#4e5968] hover:bg-blue-50 hover:text-[#3182f6] transition-colors"
+                  >
+                    #{topic}
+                  </button>
+                ))}
+              </div>
             </div>
+
+            {/* Metric Mode Toggle */}
+            <div className="mt-3 flex items-center justify-between text-[11px] border-t border-[#f2f4f6] pt-2.5">
+              <span className="text-[#6b7684]">거리 측정 단위:</span>
+              <div className="flex rounded-lg border border-[#e5e8eb] bg-[#fafbfc] p-0.5">
+                <button
+                  onClick={() => setMetricMode("cosine")}
+                  className={`rounded-md px-2 py-0.5 transition-colors ${
+                    metricMode === "cosine"
+                      ? "bg-white text-[#3182f6] shadow-xs font-semibold"
+                      : "text-[#6b7684]"
+                  }`}
+                >
+                  코사인 유사도 (%)
+                </button>
+                <button
+                  onClick={() => setMetricMode("euclidean")}
+                  className={`rounded-md px-2 py-0.5 transition-colors ${
+                    metricMode === "euclidean"
+                      ? "bg-white text-[#3182f6] shadow-xs font-semibold"
+                      : "text-[#6b7684]"
+                  }`}
+                >
+                  유클리드 거리 (L2)
+                </button>
+              </div>
+            </div>
+
+            {/* Top 10 Similar Posts List */}
+            {searchTopic.trim() && (
+              <div className="mt-3 flex-1 overflow-y-auto pr-1 border-t border-[#f2f4f6] pt-2.5">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-bold text-[#191f28] flex items-center gap-1">
+                    <TrendingUp className="h-3.5 w-3.5 text-[#3182f6]" />
+                    <span>&lsquo;{searchTopic}&rsquo;와 유사한 글 Top {topicSearchResults.length}</span>
+                  </span>
+                  <span className="text-[10px] text-[#8b95a1]">
+                    {metricMode === "cosine" ? "높을수록 일치" : "낮을수록 근접"}
+                  </span>
+                </div>
+
+                <div className="space-y-1.5">
+                  {topicSearchResults.map((res) => {
+                    const pct = Math.max(0, Math.min(100, Math.round(res.similarity * 100)));
+                    const isSelected = selectedPostId === res.post.id;
+
+                    return (
+                      <div
+                        key={res.post.id}
+                        onClick={() => setSelectedPostId(res.post.id)}
+                        className={`group cursor-pointer rounded-xl border p-2.5 transition-all ${
+                          isSelected
+                            ? "border-[#3182f6] bg-blue-50/70 shadow-xs"
+                            : res.rank === 1
+                            ? "border-amber-200 bg-amber-50/40 hover:bg-amber-50/70"
+                            : "border-[#f0f2f5] bg-[#fafbfc] hover:border-[#d1d6db] hover:bg-white"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span
+                              className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold ${
+                                res.rank === 1
+                                  ? "bg-amber-500 text-white"
+                                  : res.rank === 2
+                                  ? "bg-slate-400 text-white"
+                                  : res.rank === 3
+                                  ? "bg-amber-700/60 text-white"
+                                  : "bg-[#e5e8eb] text-[#6b7684]"
+                              }`}
+                            >
+                              {res.rank}
+                            </span>
+                            <span className="truncate text-xs font-semibold text-[#191f28] group-hover:text-[#3182f6]">
+                              {res.post.title}
+                            </span>
+                          </div>
+
+                          {/* Metric Value */}
+                          <div className="text-right shrink-0">
+                            <span
+                              className={`font-mono text-xs font-bold ${
+                                res.similarity >= 0.8
+                                  ? "text-[#1d4ed8]"
+                                  : res.similarity >= 0.7
+                                  ? "text-[#3182f6]"
+                                  : "text-[#6b7684]"
+                              }`}
+                            >
+                              {metricMode === "cosine"
+                                ? `${pct}%`
+                                : `L2 ${res.distance.toFixed(3)}`}
+                            </span>
+                            <span className="block text-[9px] text-[#8b95a1] font-mono">
+                              ({res.similarity.toFixed(3)})
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Gauge Bar */}
+                        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-[#e5e8eb]">
+                          <div
+                            className={`h-full rounded-full transition-all duration-300 ${
+                              pct >= 80
+                                ? "bg-gradient-to-r from-blue-500 to-indigo-600"
+                                : pct >= 65
+                                ? "bg-blue-400"
+                                : "bg-slate-300"
+                            }`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -434,12 +559,12 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
             {selectedPostData.post.summary}
           </p>
 
-          {/* Vector Distance Ranking Section */}
+          {/* Vector Distance Ranking Section with other posts */}
           <div className="mt-4 flex-1 overflow-y-auto pr-1">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-bold text-[#191f28] flex items-center gap-1.5">
                 <Layers className="h-3.5 w-3.5 text-[#3182f6]" />
-                <span>타 포스트와의 벡터 거리 순위</span>
+                <span>이 글과 다른 글의 유사도 거리</span>
               </span>
               <span className="text-[10px] text-[#8b95a1]">
                 기준: {metricMode === "cosine" ? "코사인 유사도" : "유클리드 거리"}
@@ -449,35 +574,35 @@ export function KnowledgeGraph({ posts }: KnowledgeGraphProps) {
             <div className="space-y-2">
               {selectedPostData.ranking.map((item) => {
                 const pct = Math.max(0, Math.min(100, Math.round(item.similarity * 100)));
-                const isHighSim = item.similarity >= similarityThreshold;
 
                 return (
                   <div
                     key={item.targetPost.id}
                     onClick={() => setSelectedPostId(item.targetPost.id)}
-                    className={`group cursor-pointer rounded-xl border p-2.5 transition-all ${
-                      isHighSim
-                        ? "border-blue-100 bg-blue-50/40 hover:bg-blue-50/80"
-                        : "border-[#f0f2f5] bg-white hover:border-[#d1d6db]"
-                    }`}
+                    className="group cursor-pointer rounded-xl border border-[#f0f2f5] bg-white p-2.5 hover:border-[#d1d6db] transition-all"
                   >
                     <div className="flex items-center justify-between text-xs font-semibold text-[#191f28]">
                       <span className="truncate max-w-[200px] group-hover:text-[#3182f6] transition-colors">
                         {item.targetPost.title}
                       </span>
-                      <span
-                        className={`font-mono text-xs ${
-                          item.similarity >= 0.8
-                            ? "text-[#1d4ed8]"
-                            : item.similarity >= 0.7
-                            ? "text-[#3182f6]"
-                            : "text-[#6b7684]"
-                        }`}
-                      >
-                        {metricMode === "cosine"
-                          ? `${pct}%`
-                          : `L2 ${item.distance.toFixed(2)}`}
-                      </span>
+                      <div className="text-right">
+                        <span
+                          className={`font-mono text-xs ${
+                            item.similarity >= 0.8
+                              ? "text-[#1d4ed8]"
+                              : item.similarity >= 0.7
+                              ? "text-[#3182f6]"
+                              : "text-[#6b7684]"
+                          }`}
+                        >
+                          {metricMode === "cosine"
+                            ? `${pct}%`
+                            : `L2 ${item.distance.toFixed(3)}`}
+                        </span>
+                        <span className="block text-[9px] text-[#8b95a1] font-mono">
+                          ({item.similarity.toFixed(3)})
+                        </span>
+                      </div>
                     </div>
 
                     {/* Similarity Bar */}
