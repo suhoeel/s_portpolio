@@ -1,9 +1,17 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Mail } from "lucide-react";
 import { profile } from "@/data/profile";
 import { GithubIcon, LinkedinIcon } from "@/components/SocialIcons";
 
 export function SiteFooter() {
+  const pathname = usePathname();
+
+  // Hide footer on graph page to ensure no window scrolling and true full-canvas experience
+  if (pathname === "/graph") return null;
+
   return (
     <footer className="mt-24 border-t border-[#f2f4f6]">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-5 py-10 text-sm text-[#8b95a1] sm:flex-row sm:items-center sm:justify-between">

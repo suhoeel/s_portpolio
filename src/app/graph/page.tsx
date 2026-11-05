@@ -12,7 +12,7 @@ export default async function GraphPage() {
   const posts = await getPosts().catch(() => []);
 
   return (
-    <div className="mx-auto w-full max-w-[1700px] px-3 sm:px-6 py-4">
+    <div className="relative h-[calc(100vh-64px)] w-full overflow-hidden bg-[#f8fafc]">
       <KnowledgeGraphWrapper posts={posts} />
     </div>
   );
