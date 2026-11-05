@@ -1,9 +1,9 @@
 import { notFound } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowLeft, Calendar, Clock, MessageSquare, Share2, Sparkles, Tag } from "lucide-react";
+import { ArrowLeft, Calendar, MessageSquare, Share2, Sparkles, Tag } from "lucide-react";
 import { getPost, getPosts } from "@/lib/supabase";
-import { formatDate, readingTime, extractToc } from "@/lib/utils";
+import { formatDate, extractToc } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { TableOfContents } from "@/components/TableOfContents";
 import { AskAiButton } from "@/components/AskAiButton";
@@ -59,8 +59,6 @@ export default async function BlogPostPage({ params }: PostPageProps) {
           <span className="font-semibold text-[#3182f6]">{post.category}</span>
           <span className="text-[#d1d6db]">·</span>
           <span className="text-[#8b95a1]">{formatDate(post.created_at)}</span>
-          <span className="text-[#d1d6db]">·</span>
-          <span className="text-[#8b95a1]">{readingTime(post.content)} 읽기</span>
         </div>
 
         <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-[#191f28] sm:text-4xl lg:text-5xl leading-tight">
@@ -103,28 +101,6 @@ export default async function BlogPostPage({ params }: PostPageProps) {
         {/* Article Body */}
         <div className="lg:col-span-3">
           <Markdown content={post.content} />
-
-          {/* Bottom AI Interaction Box */}
-          <div className="mt-16 rounded-2xl border border-[#e5e8eb] bg-[#f9fafb] p-6 sm:p-8">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-1.5 text-xs font-bold text-[#3182f6]">
-                  <Sparkles className="h-4 w-4" />
-                  <span>AI 지식 질의</span>
-                </div>
-                <h3 className="mt-1 text-lg font-bold text-[#191f28]">
-                  이 글의 내용이 더 궁금하신가요?
-                </h3>
-                <p className="mt-1 text-sm text-[#6b7684]">
-                  Supabase pgvector 하이브리드 검색으로 이 글의 핵심 내용을 AI에게 즉시 질문할 수 있습니다.
-                </p>
-              </div>
-
-              <AskAiButton
-                question={`[${post.title}] 글의 핵심 아키텍처와 해결책을 3줄로 요약해줘.`}
-              />
-            </div>
-          </div>
 
           {/* Author Profile Card */}
           <div className="mt-10 flex items-center gap-4 border-t border-[#f2f4f6] pt-8">
